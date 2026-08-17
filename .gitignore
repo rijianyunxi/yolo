@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+
+# Node / 前端
+node_modules/
+webui/frontend/node_modules/
+
+# 运行时生成物
+webui/uploads/
+webui/task_logs/
+webui/uvicorn.pid
+webui/task_history.json
+runs/
+
+# 模型权重（可重新下载或训练得到）
+*.pt
+
+# 数据集图片/标签（仅提交配置 yaml，不提交数据）
+datasets/*/images/
+datasets/*/labels/
+
+# 操作系统 / 编辑器
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

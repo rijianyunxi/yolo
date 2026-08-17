@@ -1,0 +1,17 @@
+path: D:/work/yolo/datasets/safety
+train: images/train
+val: images/val
+test: images/test
+
+names:
+  0: person
+  1: helmet
+  2: vest
+  3: fire
+
+display_names:
+  0: 人
+  1: 安全帽
+  2: 安全衣
+  3: 火源
+
