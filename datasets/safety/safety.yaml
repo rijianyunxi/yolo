@@ -1,4 +1,5 @@
 path: D:/work/yolo/datasets/safety
+title: 安全生产检测
 train: images/train
 val: images/val
 test: images/test
@@ -14,4 +15,3 @@ display_names:
   1: 安全帽
   2: 安全衣
   3: 火源
-

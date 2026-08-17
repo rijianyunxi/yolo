@@ -1,4 +1,5 @@
-﻿path: D:/work/yolo/datasets/cat
+path: D:/work/yolo/datasets/cat
+title: 猫检测
 train: images/train
 val: images/val
 test: images/test

@@ -5,6 +5,8 @@ import threading
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 
 ROOT = Path(os.environ.get("YOLO_WORKDIR", Path(__file__).resolve().parents[1])).resolve()
 WEBUI = ROOT / "webui"
@@ -16,19 +18,37 @@ PYTHON = ROOT / ".venv" / "Scripts" / "python.exe"
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 VALID_SPLITS = {"train", "val", "test"}
 MAX_UPLOAD_BYTES = 100 * 1024 * 1024
-DATASET_PROFILES = {
-    "cat": {
-        "title": "猫检测",
-        "root": ROOT / "datasets" / "cat",
-        "config": ROOT / "datasets" / "cat" / "cat.yaml",
-    },
-    "safety": {
-        "title": "安全生产检测",
-        "root": ROOT / "datasets" / "safety",
-        "config": ROOT / "datasets" / "safety" / "safety.yaml",
-    },
-}
-DEFAULT_PROFILE = next(iter(DATASET_PROFILES))
+
+
+def _discover_profiles() -> dict[str, dict[str, Any]]:
+    """从 datasets/<profile>/<profile>.yaml 自动发现数据集配置，新增 profile 无需改代码。"""
+    profiles: dict[str, dict[str, Any]] = {}
+    datasets_root = ROOT / "datasets"
+    if not datasets_root.exists():
+        return profiles
+    for root_dir in sorted(datasets_root.iterdir()):
+        if not root_dir.is_dir():
+            continue
+        yamls = sorted(root_dir.glob("*.yaml"))
+        if not yamls:
+            continue
+        config_path = yamls[0]
+        title = None
+        try:
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+            title = raw.get("title")
+        except Exception:
+            title = None
+        profiles[str(root_dir.name)] = {
+            "title": str(title or root_dir.name),
+            "root": root_dir,
+            "config": config_path,
+        }
+    return profiles
+
+
+DATASET_PROFILES = _discover_profiles()
+DEFAULT_PROFILE = next(iter(DATASET_PROFILES), "")
 MAX_PREDICT_QUEUE = 5
 MAX_PREDICT_LIMIT = 200
 MAX_TASK_LOGS_TO_KEEP = 50
