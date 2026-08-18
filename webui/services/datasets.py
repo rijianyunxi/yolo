@@ -164,6 +164,32 @@ def image_record(image_path: Path, profile: str, split: str) -> dict[str, Any]:
     }
 
 
+def delete_dataset_images(profile: str, split: str, filenames: list[str]) -> dict[str, Any]:
+    images_dir, labels_dir = split_paths(profile, split)
+    targets: list[tuple[Path, Path]] = []
+    seen: set[str] = set()
+    for filename in filenames:
+        image_name = safe_filename(filename)
+        if image_name in seen:
+            continue
+        seen.add(image_name)
+        image_path = images_dir / image_name
+        if image_path.suffix.lower() not in IMAGE_EXTS or not image_path.exists():
+            raise HTTPException(status_code=404, detail=f"训练图片不存在: {filename}")
+        label_path = labels_dir / f"{image_path.stem}.txt"
+        targets.append((image_path, label_path))
+
+    deleted = []
+    for image_path, label_path in targets:
+        image_path.unlink()
+        if label_path.exists():
+            label_path.unlink()
+        deleted.append(image_path.name)
+
+    invalidate_dataset_counts(profile)
+    return {"deleted": deleted, "dataset": dataset_counts(profile)}
+
+
 async def save_upload(file: UploadFile, target_dir: Path, allowed_exts: set[str]) -> dict[str, Any]:
     name = safe_filename(file.filename or "upload")
     suffix = Path(name).suffix.lower()

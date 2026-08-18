@@ -22,6 +22,9 @@ runs/
 datasets/*/images/
 datasets/*/labels/
 
+# 测试/截图
+test_images/
+
 # 操作系统 / 编辑器
 .DS_Store
 Thumbs.db

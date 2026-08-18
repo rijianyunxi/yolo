@@ -73,6 +73,8 @@ function App() {
   const [photoPage, setPhotoPage] = useState(1);
   const [photoTotal, setPhotoTotal] = useState(0);
   const [photoPageCount, setPhotoPageCount] = useState(0);
+    const [photoLabelFilter, setPhotoLabelFilter] = useState<'all' | 'labeled' | 'unlabeled'>('all');
+    const [selectedPhotoNames, setSelectedPhotoNames] = useState<string[]>([]);
   const [annotationImages, setAnnotationImages] = useState<DatasetImage[]>([]);
   const [annotationPage, setAnnotationPage] = useState(1);
   const [annotationTotal, setAnnotationTotal] = useState(0);
@@ -144,11 +146,12 @@ function App() {
 
   useEffect(() => {
     setPhotoPage(1);
-  }, [datasetProfile, photoSplit]);
+      setSelectedPhotoNames([]);
+  }, [datasetProfile, photoLabelFilter, photoSplit]);
 
   useEffect(() => {
     if (menu === 'photos') void loadManagedImages(photoSplit, photoPage);
-  }, [datasetProfile, menu, photoPage, photoSplit]);
+  }, [datasetProfile, menu, photoLabelFilter, photoPage, photoSplit]);
 
   useEffect(() => {
     setAnnotationPage(1);
@@ -168,6 +171,13 @@ function App() {
       void saveAnnotation();
     };
   });
+
+  // 保存标注提示：1 秒后自动关闭（类似 Element UI message）
+  useEffect(() => {
+    if (!saveDialog) return;
+    const timer = window.setTimeout(() => setSaveDialog(null), 1000);
+    return () => window.clearTimeout(timer);
+  }, [saveDialog]);
 
   function nudgeSelectedBox(dxPx: number, dyPx: number, index: number) {
     const img = selectedImage;
@@ -291,7 +301,7 @@ function App() {
   async function loadManagedImages(split: Split, page: number) {
     try {
       const response = await api.get<DatasetImagePage>(
-        `/api/dataset/images?profile=${datasetProfile}&split=${split}&page=${page}&page_size=60`
+        `/api/dataset/images?profile=${datasetProfile}&split=${split}&page=${page}&page_size=60&label=${photoLabelFilter}`
       );
       setManagedImages(response.images);
       setPhotoTotal(response.total);
@@ -376,6 +386,7 @@ function App() {
     try {
       await api.remove(`/api/dataset/images/${image.profile}/${image.split}/${encodeURIComponent(image.name)}`);
       setPhotoMessage(`已删除：${image.name}`);
+        setSelectedPhotoNames((current) => current.filter((item) => item !== image.name));
       await refreshStatus();
       await loadManagedImages(photoSplit, photoPage);
       await loadAnnotationImages(annotateSplit, annotationPage, annotationLabelFilter, true);
@@ -383,6 +394,44 @@ function App() {
       setPhotoMessage(error instanceof Error ? error.message : '删除失败');
     }
   }
+function togglePhotoSelection(name: string) {
+      setSelectedPhotoNames((current) =>
+        current.includes(name) ? current.filter((item) => item !== name) : [...current, name]
+      );
+    }
+
+    function toggleSelectAllPhotos() {
+      setSelectedPhotoNames((current) =>
+        (() => {
+            const currentNames = new Set(managedImages.map((item) => item.name));
+            const allCurrentSelected = managedImages.every((item) => current.includes(item.name));
+            return allCurrentSelected
+              ? current.filter((name) => !currentNames.has(name))
+              : Array.from(new Set([...current, ...currentNames]));
+          })()
+          // ? []
+          // : managedImages.map((item) => item.name)
+      );
+    }
+
+    async function deleteSelectedPhotos() {
+      if (!selectedPhotoNames.length) return;
+      if (!window.confirm(`确定删除选中的 ${selectedPhotoNames.length} 张图片吗？图片和同名标签都会删除。`)) return;
+      try {
+        const response = await api.postJson<{ deleted: string[] }>('/api/dataset/images/batch-delete', {
+          profile: datasetProfile,
+          split: photoSplit,
+          filenames: selectedPhotoNames,
+        });
+        setPhotoMessage(`已批量删除 ${response.deleted.length} 张图片。`);
+      setSelectedPhotoNames([]);
+        await refreshStatus();
+        await loadManagedImages(photoSplit, photoPage);
+        await loadAnnotationImages(annotateSplit, annotationPage, annotationLabelFilter, true);
+      } catch (error) {
+        setPhotoMessage(error instanceof Error ? error.message : '批量删除失败');
+      }
+    }
 
   async function saveAnnotation() {
     if (!selectedImage) return;
@@ -478,15 +527,7 @@ function App() {
     { key: 'logs', label: '日志与结果', icon: <TerminalSquare size={18} /> },
   ];
 
-  const pageTitle: Record<MenuKey, string> = {
-    overview: '总览',
-    dataset: '数据集导入',
-    photos: '训练图片管理',
-    annotate: '在线标注',
-    training: '训练任务',
-    prediction: '预测调试',
-    logs: '日志与结果',
-  };
+
 
   const splitRows = (['train', 'val', 'test'] as Split[]).map((key) => {
     const item = dataset?.splits[key];
@@ -595,10 +636,6 @@ function App() {
       </aside>
 
       <main className="content">
-        <div className="content-head">
-          <h1>{pageTitle[menu]}</h1>
-        </div>
-
 
         {task?.status === 'failed' ? (
           <div className="task-banner">
@@ -814,10 +851,30 @@ function App() {
                     <option value="val">验证集 val</option>
                     <option value="test">测试集 test</option>
                   </select>
+<select
+                      value={photoLabelFilter}
+                      onChange={(event) => {
+                        setPhotoPage(1);
+                        setPhotoLabelFilter(event.target.value as 'all' | 'labeled' | 'unlabeled');
+                      }}
+                    >
+                      <option value="all">全部图片</option>
+                      <option value="unlabeled">未标注</option>
+                      <option value="labeled">已标注</option>
+                    </select>
                   <button type="button" className="btn" onClick={() => void loadManagedImages(photoSplit, photoPage)}>
                     <RefreshCw size={16} />
                     刷新列表
                   </button>
+<button
+                      type="button"
+                      className="btn danger"
+                      disabled={!selectedPhotoNames.length}
+                      onClick={() => void deleteSelectedPhotos()}
+                    >
+                      <Trash2 size={16} />
+                      批量删除{selectedPhotoNames.length ? ` (${selectedPhotoNames.length})` : ''}
+                    </button>
                 </div>
               </div>
 
@@ -857,11 +914,27 @@ function App() {
               <div className="panel-head">
                 <h2>{splitName(photoSplit)}</h2>
                 <span className="pill">{photoTotal} 张图片</span>
+<label className="switch">
+                    <input
+                      type="checkbox"
+                      checked={managedImages.length > 0 && managedImages.every((item) => selectedPhotoNames.includes(item.name))}
+                      onChange={toggleSelectAllPhotos}
+                    />
+                    全选本页
+                  </label>
               </div>
               <div className="photo-grid">
                 {managedImages.length ? (
                   managedImages.map((image) => (
-                    <article className="photo-card" key={`${image.split}-${image.name}`}>
+                    <article className={selectedPhotoNames.includes(image.name) ? 'photo-card selected' : 'photo-card'} key={`${image.split}-${image.name}`}>
+                        <label className="photo-card-select">
+                          <input
+                            type="checkbox"
+                            checked={selectedPhotoNames.includes(image.name)}
+                            onChange={() => togglePhotoSelection(image.name)}
+                          />
+                          <span>选择</span>
+                        </label>
                       <img src={image.url} alt={image.name} />
                       <div className="photo-card-body">
                         <strong>{image.name}</strong>
@@ -890,7 +963,7 @@ function App() {
                     </article>
                   ))
                 ) : (
-                  <div className="empty">此分组暂时没有图片。</div>
+                  <div className="empty">没有符合条件的图片。</div>
                 )}
               </div>
               <Pagination page={photoPage} pageCount={photoPageCount} onChange={setPhotoPage} />
@@ -1312,20 +1385,9 @@ function App() {
         ) : null}
 
         {saveDialog ? (
-          <div className="modal-overlay" onClick={() => setSaveDialog(null)}>
-            <div className="modal save-dialog" onClick={(event) => event.stopPropagation()}>
-              <div className="modal-head">
-                <h3>保存标注</h3>
-                <button type="button" className="btn" onClick={() => setSaveDialog(null)}>
-                  <X size={16} />
-                  关闭
-                </button>
-              </div>
-              <div className={`save-dialog-body ${saveDialog.kind}`}>
-                {saveDialog.kind === 'success' ? <CheckCircle2 size={28} /> : <AlertTriangle size={28} />}
-                <span>{saveDialog.message}</span>
-              </div>
-            </div>
+          <div className={`save-toast ${saveDialog.kind}`} role="status">
+            {saveDialog.kind === 'success' ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />}
+            <span>{saveDialog.message}</span>
           </div>
         ) : null}
       </main>

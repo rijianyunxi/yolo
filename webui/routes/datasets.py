@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -9,6 +10,7 @@ from pydantic import BaseModel, Field
 from ..config import DEFAULT_PROFILE, IMAGE_EXTS, VALID_SPLITS
 from ..services.datasets import (
     dataset_counts,
+    delete_dataset_images,
     image_record,
     invalidate_dataset_counts,
     safe_filename,
@@ -19,6 +21,16 @@ from ..services.datasets import (
 from ..services.profiles import profile_classes, resolve_profile
 
 router = APIRouter()
+
+
+def _natural_sort_key(name: str) -> list[tuple[int, int | str]]:
+    """Natural sort key: splits a filename into digit/non-digit chunks so that
+    1, 2, 10, 100 sort numerically instead of lexically."""
+    return [
+        (0, int(chunk)) if chunk.isdigit() else (1, chunk.lower())
+        for chunk in re.split(r"(\d+)", name)
+        if chunk != ""
+    ]
 
 
 class AnnotationBox(BaseModel):
@@ -34,6 +46,12 @@ class SaveLabelsRequest(BaseModel):
     split: str
     filename: str
     boxes: list[AnnotationBox] = Field(default_factory=list)
+
+
+class BatchDeleteImagesRequest(BaseModel):
+    profile: str = DEFAULT_PROFILE
+    split: str
+    filenames: list[str] = Field(default_factory=list)
 
 
 @router.post("/api/dataset/upload")
@@ -82,7 +100,7 @@ def dataset_images(profile: str = DEFAULT_PROFILE, split: str = "train", page: i
     images_dir, labels_dir = split_paths(profile, split)
     all_images = sorted(
         [path for path in images_dir.iterdir() if path.is_file() and path.suffix.lower() in IMAGE_EXTS],
-        key=lambda item: item.name.lower(),
+        key=lambda item: _natural_sort_key(item.name),
     )
     if label in ("labeled", "unlabeled"):
         want_label = label == "labeled"
@@ -137,6 +155,12 @@ def save_dataset_labels(payload: SaveLabelsRequest) -> dict[str, Any]:
         "image": image_record(image_path, payload.profile, payload.split),
         "dataset": dataset_counts(payload.profile),
     }
+
+
+@router.post("/api/dataset/images/batch-delete")
+def batch_delete_images(payload: BatchDeleteImagesRequest) -> dict[str, Any]:
+    profile = resolve_profile(payload.profile)
+    return delete_dataset_images(profile, payload.split, payload.filenames)
 
 
 @router.delete("/api/dataset/images/{profile}/{split}/{filename}")
