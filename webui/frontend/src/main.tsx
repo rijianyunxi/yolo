@@ -564,6 +564,28 @@ function App() {
         </nav>
 
         <div className="sidebar-footer">
+          <label className="sidebar-profile">
+            <span>全局数据集配置</span>
+            <select value={datasetProfile} onChange={(event) => setDatasetProfile(event.target.value)}>
+              {profileOptions.map((profile) => (
+                <option key={profile.id} value={profile.id}>
+                  {profile.title}（{profile.id}）
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="sidebar-actions">
+            <button type="button" className="btn" onClick={() => void refreshAll()}>
+              <RefreshCw size={14} />
+              刷新
+            </button>
+            {running ? (
+              <button type="button" className="btn danger" onClick={() => void stopTask()}>
+                <X size={14} />
+                停止任务
+              </button>
+            ) : null}
+          </div>
           <div className="status-line">
             <span className={running ? 'dot live' : 'dot'} />
             {running ? '训练任务运行中' : '当前没有运行任务'}
@@ -573,34 +595,10 @@ function App() {
       </aside>
 
       <main className="content">
-        <header className="topbar">
-          <div>
-            <div className="page-kicker">当前数据集：{currentProfile?.title || datasetProfile} / {datasetProfile}</div>
-            <h1>{pageTitle[menu]}</h1>
-          </div>
-          <div className="topbar-actions">
-            <label className="compact-field context-select">
-              全局数据集配置
-              <select value={datasetProfile} onChange={(event) => setDatasetProfile(event.target.value)}>
-                {profileOptions.map((profile) => (
-                  <option key={profile.id} value={profile.id}>
-                    {profile.title}（{profile.id}）
-                  </option>
-                ))}
-              </select>
-            </label>
-            <button type="button" className="btn" onClick={() => void refreshAll()}>
-              <RefreshCw size={16} />
-              刷新
-            </button>
-            {running ? (
-              <button type="button" className="btn danger" onClick={() => void stopTask()}>
-                <X size={16} />
-                停止任务
-              </button>
-            ) : null}
-          </div>
-        </header>
+        <div className="content-head">
+          <h1>{pageTitle[menu]}</h1>
+        </div>
+
 
         {task?.status === 'failed' ? (
           <div className="task-banner">
