@@ -85,6 +85,7 @@ function App() {
   const [annotationBoxes, setAnnotationBoxes] = useState<Box[]>([]);
   const [annotationClasses, setAnnotationClasses] = useState<ClassItem[]>([]);
   const [selectedClassId, setSelectedClassId] = useState(0);
+  const [selectedBoxIndex, setSelectedBoxIndex] = useState<number | null>(null);
   const [datasetMessage, setDatasetMessage] = useState('');
   const [photoMessage, setPhotoMessage] = useState('');
   const [annotationMessage, setAnnotationMessage] = useState('');
@@ -156,6 +157,62 @@ function App() {
   useEffect(() => {
     if (menu !== 'annotate') setAnnotateProfile(datasetProfile);
   }, [datasetProfile, menu]);
+
+  const saveAnnotationRef = useRef<() => void>(() => {});
+  useEffect(() => {
+    saveAnnotationRef.current = () => {
+      void saveAnnotation();
+    };
+  });
+
+  function nudgeSelectedBox(dxPx: number, dyPx: number, index: number) {
+    const img = selectedImage;
+    if (!img) return;
+    const imageWidth = img.width || 1;
+    const imageHeight = img.height || 1;
+    setAnnotationBoxes((current) =>
+      current.map((box, i) => {
+        if (i !== index) return box;
+        const halfWidth = box.width / 2;
+        const halfHeight = box.height / 2;
+        return {
+          ...box,
+          x: Number(Math.min(1 - halfWidth, Math.max(halfWidth, box.x + dxPx / imageWidth)).toFixed(6)),
+          y: Number(Math.min(1 - halfHeight, Math.max(halfHeight, box.y + dyPx / imageHeight)).toFixed(6)),
+        };
+      })
+    );
+  }
+
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (menu !== 'annotate' || !selectedImage) return;
+      const target = event.target as HTMLElement | null;
+      const tag = target?.tagName;
+
+      if (event.key === 'Enter' && !event.repeat) {
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || tag === 'BUTTON') return;
+        event.preventDefault();
+        saveAnnotationRef.current();
+        return;
+      }
+
+      const moves: Record<string, [number, number]> = {
+        ArrowUp: [0, -2],
+        ArrowDown: [0, 2],
+        ArrowLeft: [-2, 0],
+        ArrowRight: [2, 0],
+      };
+      const move = moves[event.key];
+      if (move && selectedBoxIndex != null) {
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+        event.preventDefault();
+        nudgeSelectedBox(move[0], move[1], selectedBoxIndex);
+      }
+    }
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [menu, selectedImage, selectedBoxIndex]);
 
   async function refreshStatus() {
     const next = await api.get<Status>(`/api/status?profile=${datasetProfile}`);
@@ -270,6 +327,7 @@ function App() {
         const match = selectedImage ? images.find((item) => item.name === selectedImage.name) : null;
         const next = match || (sameContext && selectedImage ? selectedImage : images[0] || null);
         setSelectedImage(next);
+        setSelectedBoxIndex(null);
         if (match || !sameContext) setAnnotationBoxes(next?.boxes || []);
       }
       setAnnotationImages(images);
@@ -342,6 +400,7 @@ function App() {
       setAnnotationBoxes(updated.boxes);
       setAnnotationMessage(`已保存 ${updated.labelCount} 个标注框。`);
       updateCachedAnnotationImage(updated);
+      setSelectedBoxIndex(null);
       await refreshStatus();
     } catch (error) {
       setAnnotationMessage(error instanceof Error ? error.message : '保存标注失败');
@@ -857,6 +916,7 @@ function App() {
                     onClick={() => {
                       setSelectedImage(image);
                       setAnnotationBoxes(image.boxes);
+                      setSelectedBoxIndex(null);
                       setAnnotationMessage('');
                     }}
                   >
@@ -872,14 +932,14 @@ function App() {
             </aside>
 
             <section className="annotation-workspace panel">
-              <div className="panel-head">
-                <div>
+              <div className="annotation-toolbar">
+                <div className="annotation-title">
                   <h2>{selectedImage?.name || '在线标注'}</h2>
-                  <p className="annotation-help">先选择当前类别，再用鼠标拖拽画框。</p>
+                  {selectedImage ? <span className="pill">{annotationBoxes.length} 个框</span> : null}
                 </div>
-                <div className="inline-controls">
-                  <label className="compact-field">
-                    当前类别
+                <div className="annotation-controls">
+                  <label className="class-picker">
+                    <span>当前类别</span>
                     <select value={selectedClassId} onChange={(event) => setSelectedClassId(Number(event.target.value))}>
                       {annotationClasses.map((item) => (
                         <option key={item.id} value={item.id}>
@@ -892,11 +952,22 @@ function App() {
                     type="button"
                     className="btn"
                     disabled={!annotationBoxes.length}
-                    onClick={() => setAnnotationBoxes((current) => current.slice(0, -1))}
+                    onClick={() => {
+                      setAnnotationBoxes((current) => current.slice(0, -1));
+                      setSelectedBoxIndex(null);
+                    }}
                   >
                     撤销最后一个框
                   </button>
-                  <button type="button" className="btn danger" disabled={!annotationBoxes.length} onClick={() => setAnnotationBoxes([])}>
+                  <button
+                    type="button"
+                    className="btn danger"
+                    disabled={!annotationBoxes.length}
+                    onClick={() => {
+                      setAnnotationBoxes([]);
+                      setSelectedBoxIndex(null);
+                    }}
+                  >
                     清空框选
                   </button>
                   <button type="button" className="primary" disabled={!selectedImage} onClick={() => void saveAnnotation()}>
@@ -911,24 +982,47 @@ function App() {
                 boxes={annotationBoxes}
                 classes={annotationClasses}
                 selectedClassId={selectedClassId}
+                selectedIndex={selectedBoxIndex}
+                onSelectIndex={setSelectedBoxIndex}
                 onChange={setAnnotationBoxes}
               />
-              <p className="help">{annotationMessage || `当前共 ${annotationBoxes.length} 个标注框。保存后会写入同名 YOLO 标签文件。`}</p>
+              <p className="help">{annotationMessage || `当前共 ${annotationBoxes.length} 个标注框。点击已标注框可拖动微调，选中后用方向键微调，Enter 保存。`}</p>
 
               <div className="box-list">
                 {annotationBoxes.length ? (
                   annotationBoxes.map((box, index) => (
-                    <div className="box-row" key={`${box.x}-${box.y}-${index}`}>
+                    <div
+                      className={selectedBoxIndex === index ? 'box-row active' : 'box-row'}
+                      key={`${box.x}-${box.y}-${index}`}
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setSelectedBoxIndex(index)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' || event.key === ' ') {
+                          event.preventDefault();
+                          setSelectedBoxIndex(index);
+                        }
+                      }}
+                    >
                       <span>{annotationClasses.find((item) => item.id === box.classId)?.displayName || `类别 ${box.classId}`} #{index + 1}</span>
                       <span>中心 ({box.x.toFixed(3)}, {box.y.toFixed(3)})</span>
                       <span>大小 ({box.width.toFixed(3)}, {box.height.toFixed(3)})</span>
-                      <button type="button" className="icon-button" aria-label={`删除标注框 ${index + 1}`} onClick={() => setAnnotationBoxes((current) => current.filter((_, i) => i !== index))}>
+                      <button
+                        type="button"
+                        className="icon-button"
+                        aria-label={`删除标注框 ${index + 1}`}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setAnnotationBoxes((current) => current.filter((_, i) => i !== index));
+                          setSelectedBoxIndex(null);
+                        }}
+                      >
                         <Trash2 size={15} />
                       </button>
                     </div>
                   ))
                 ) : (
-                  <div className="empty">还没有框选。请在图片上按住鼠标左键拖动，框住每个目标。</div>
+                  <div className="empty">还没有框选。请在图片上按住鼠标左键拖动，框住每个目标；点击已标注框可拖动微调。</div>
                 )}
               </div>
             </section>

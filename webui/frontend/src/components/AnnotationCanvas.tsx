@@ -6,17 +6,22 @@ export function AnnotationCanvas({
   boxes,
   classes,
   selectedClassId,
+  selectedIndex,
+  onSelectIndex,
   onChange,
 }: {
   image: DatasetImage | null;
   boxes: Box[];
   classes: ClassItem[];
   selectedClassId: number;
+  selectedIndex: number | null;
+  onSelectIndex: (index: number | null) => void;
   onChange: (boxes: Box[]) => void;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
   const dragStart = useRef<{ x: number; y: number } | null>(null);
+  const moving = useRef<{ index: number; offsetX: number; offsetY: number } | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [loadError, setLoadError] = useState('');
   const [draft, setDraft] = useState<{ x1: number; y1: number; x2: number; y2: number } | null>(null);
@@ -41,11 +46,17 @@ export function AnnotationCanvas({
       const top = (box.y - box.height / 2) * canvas.height;
       const width = box.width * canvas.width;
       const height = box.height * canvas.height;
-      ctx.strokeStyle = '#27c5f3';
-      ctx.fillStyle = 'rgb(39 197 243 / 0.18)';
+      const selected = index === selectedIndex;
+      ctx.strokeStyle = selected ? '#f3b83d' : '#27c5f3';
+      ctx.fillStyle = selected ? 'rgb(243 184 61 / 0.22)' : 'rgb(39 197 243 / 0.18)';
       ctx.strokeRect(left, top, width, height);
       ctx.fillRect(left, top, width, height);
-      ctx.fillStyle = '#052431';
+      if (selected) {
+        ctx.lineWidth = Math.max(3, Math.round(canvas.width / 300));
+        ctx.strokeRect(left, top, width, height);
+        ctx.lineWidth = Math.max(2, Math.round(canvas.width / 420));
+      }
+      ctx.fillStyle = selected ? '#3d2b00' : '#052431';
       ctx.fillRect(left, Math.max(0, top - 28), 72, 25);
       ctx.fillStyle = '#ffffff';
       const className = classes.find((item) => item.id === box.classId)?.displayName || `类别 ${box.classId}`;
@@ -62,13 +73,15 @@ export function AnnotationCanvas({
       ctx.strokeRect(left, top, width, height);
       ctx.setLineDash([]);
     }
-  }, [boxes, classes, draft]);
+  }, [boxes, classes, draft, selectedIndex]);
 
   useEffect(() => {
     imageRef.current = null;
     setLoaded(false);
     setLoadError('');
     setDraft(null);
+    dragStart.current = null;
+    moving.current = null;
     if (!image) return;
 
     const bitmap = new Image();
@@ -96,21 +109,71 @@ export function AnnotationCanvas({
     };
   }
 
+  function pointInBox(point: { x: number; y: number }, box: Box, width: number, height: number) {
+    const left = (box.x - box.width / 2) * width;
+    const top = (box.y - box.height / 2) * height;
+    const right = (box.x + box.width / 2) * width;
+    const bottom = (box.y + box.height / 2) * height;
+    return point.x >= left && point.x <= right && point.y >= top && point.y <= bottom;
+  }
+
   function onPointerDown(event: ReactPointerEvent<HTMLCanvasElement>) {
     if (!imageRef.current) return;
+    const canvas = event.currentTarget;
     event.currentTarget.setPointerCapture(event.pointerId);
     const point = pointFromEvent(event);
+
+    for (let i = boxes.length - 1; i >= 0; i--) {
+      if (pointInBox(point, boxes[i], canvas.width, canvas.height)) {
+        onSelectIndex(i);
+        const box = boxes[i];
+        moving.current = {
+          index: i,
+          offsetX: point.x - box.x * canvas.width,
+          offsetY: point.y - box.y * canvas.height,
+        };
+        return;
+      }
+    }
+
+    onSelectIndex(null);
     dragStart.current = point;
     setDraft({ x1: point.x, y1: point.y, x2: point.x, y2: point.y });
   }
 
   function onPointerMove(event: ReactPointerEvent<HTMLCanvasElement>) {
+    if (moving.current) {
+      const canvas = event.currentTarget;
+      const point = pointFromEvent(event);
+      const { index, offsetX, offsetY } = moving.current;
+      const box = boxes[index];
+      if (!box) {
+        moving.current = null;
+        return;
+      }
+      const halfWidth = box.width / 2;
+      const halfHeight = box.height / 2;
+      const nextX = Math.min(1 - halfWidth, Math.max(halfWidth, (point.x - offsetX) / canvas.width));
+      const nextY = Math.min(1 - halfHeight, Math.max(halfHeight, (point.y - offsetY) / canvas.height));
+      const next = [...boxes];
+      next[index] = {
+        ...box,
+        x: Number(nextX.toFixed(6)),
+        y: Number(nextY.toFixed(6)),
+      };
+      onChange(next);
+      return;
+    }
     if (!dragStart.current) return;
     const point = pointFromEvent(event);
     setDraft((current) => (current ? { ...current, x2: point.x, y2: point.y } : current));
   }
 
   function finishBox(event: ReactPointerEvent<HTMLCanvasElement>) {
+    if (moving.current) {
+      moving.current = null;
+      return;
+    }
     const start = dragStart.current;
     const canvas = event.currentTarget;
     if (!start || !canvas.width || !canvas.height) return;
@@ -157,6 +220,7 @@ export function AnnotationCanvas({
         onPointerUp={finishBox}
         onPointerCancel={() => {
           dragStart.current = null;
+          moving.current = null;
           setDraft(null);
         }}
       />

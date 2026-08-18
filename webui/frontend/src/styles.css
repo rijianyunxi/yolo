@@ -739,6 +739,64 @@ input[type='file'] {
   min-width: 0;
 }
 
+.annotation-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.annotation-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.annotation-title h2 {
+  margin: 0;
+  font-size: 18px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.annotation-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.annotation-controls .class-picker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  padding: 0 8px 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--panel-2);
+  color: var(--muted);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.annotation-controls .class-picker select {
+  min-height: 0;
+  height: 100%;
+  border: none;
+  background: transparent;
+  padding: 0;
+  color: var(--text);
+  font-size: 14px;
+  cursor: pointer;
+  outline: none;
+}
+
+
 .annotation-canvas-wrap {
   display: grid;
   place-items: center;
@@ -785,6 +843,23 @@ input[type='file'] {
   background: var(--panel-2);
   color: var(--muted);
   font-size: 13px;
+  cursor: pointer;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+
+.box-row:hover {
+  border-color: var(--primary);
+}
+
+.box-row:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--primary);
+}
+
+.box-row.active {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 1px var(--primary);
+  background: color-mix(in srgb, var(--primary) 10%, var(--panel-2));
 }
 
 .box-row span:first-child {
