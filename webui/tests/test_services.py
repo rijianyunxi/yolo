@@ -9,7 +9,7 @@ from starlette.datastructures import UploadFile
 
 sys.path.insert(0, "D:/work/yolo")
 
-from webui.config import DEFAULT_PROFILE
+from webui.config import DATASET_PROFILES, DEFAULT_PROFILE
 from webui.services.datasets import (
     dataset_counts,
     image_dimensions,
@@ -20,7 +20,7 @@ from webui.services.datasets import (
     validate_yolo_label_file,
 )
 from webui.services.predictions import PredictionTask, prediction_task_payload
-from webui.services.profiles import profile_config
+from webui.services.profiles import profile_config, resolve_profile
 from webui.services.tasks import ManagedTask, task_payload
 
 SMOKE_IMAGE = Path("D:/work/yolo/webui/uploads/smoke_test.jpg")
@@ -38,6 +38,24 @@ def test_profile_config_invalid_profile_raises():
         profile_config("nonexistent")
     assert exc.value.status_code == 400
 
+
+def test_profile_config_empty_falls_back_to_default():
+    config = profile_config("")
+    assert config is DATASET_PROFILES[DEFAULT_PROFILE]
+
+
+def test_resolve_profile_empty_falls_back_to_default():
+    assert resolve_profile("") == DEFAULT_PROFILE
+
+
+def test_resolve_profile_valid_profile():
+    assert resolve_profile(DEFAULT_PROFILE) == DEFAULT_PROFILE
+
+
+def test_resolve_profile_invalid_raises():
+    with pytest.raises(HTTPException) as exc:
+        resolve_profile("nonexistent")
+    assert exc.value.status_code == 400
 
 def test_split_paths_valid():
     images_dir, labels_dir = split_paths(DEFAULT_PROFILE, "train")

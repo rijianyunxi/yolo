@@ -14,7 +14,7 @@ from fastapi import APIRouter
 from ..config import DATASET_PROFILES, DEFAULT_PROFILE, ROOT
 from ..services.datasets import dataset_counts
 from ..services.models import newest_best_model
-from ..services.profiles import profile_classes, profile_config
+from ..services.profiles import profile_classes, profile_config, resolve_profile
 from ..services.tasks import current_task, task_payload
 
 router = APIRouter()
@@ -22,6 +22,7 @@ router = APIRouter()
 
 @router.get("/api/status")
 def status(profile: str = DEFAULT_PROFILE) -> dict[str, Any]:
+    profile = resolve_profile(profile)
     best = newest_best_model(profile)
     return {
         "profile": profile,
@@ -50,6 +51,7 @@ def status(profile: str = DEFAULT_PROFILE) -> dict[str, Any]:
 
 @router.get("/api/classes")
 def classes(profile: str = DEFAULT_PROFILE) -> dict[str, Any]:
+    profile = resolve_profile(profile)
     config = profile_config(profile)
     return {
         "profile": profile,

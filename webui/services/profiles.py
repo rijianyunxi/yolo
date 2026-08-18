@@ -8,10 +8,16 @@ from fastapi import HTTPException
 from ..config import DATASET_PROFILES, DEFAULT_PROFILE
 
 
-def profile_config(profile: str = DEFAULT_PROFILE) -> dict[str, Any]:
+def resolve_profile(profile: str = DEFAULT_PROFILE) -> str:
+    if not profile:
+        profile = DEFAULT_PROFILE
     if profile not in DATASET_PROFILES:
         raise HTTPException(status_code=400, detail="无效的数据集配置")
-    return DATASET_PROFILES[profile]
+    return profile
+
+
+def profile_config(profile: str = DEFAULT_PROFILE) -> dict[str, Any]:
+    return DATASET_PROFILES[resolve_profile(profile)]
 
 
 def profile_classes(profile: str = DEFAULT_PROFILE) -> list[dict[str, Any]]:

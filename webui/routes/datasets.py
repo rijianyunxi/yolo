@@ -16,7 +16,7 @@ from ..services.datasets import (
     split_paths,
     validate_yolo_label_file,
 )
-from ..services.profiles import profile_classes
+from ..services.profiles import profile_classes, resolve_profile
 
 router = APIRouter()
 
@@ -46,6 +46,7 @@ async def upload_dataset(
     if split not in VALID_SPLITS:
         raise HTTPException(status_code=400, detail="无效的数据集分组")
 
+    profile = resolve_profile(profile)
     image_dir, label_dir = split_paths(profile, split)
     image_dir.mkdir(parents=True, exist_ok=True)
     label_dir.mkdir(parents=True, exist_ok=True)
@@ -77,6 +78,7 @@ async def upload_dataset(
 
 @router.get("/api/dataset/images")
 def dataset_images(profile: str = DEFAULT_PROFILE, split: str = "train", page: int = 1, page_size: int = 60) -> dict[str, Any]:
+    profile = resolve_profile(profile)
     images_dir, _ = split_paths(profile, split)
     all_images = sorted(
         [path for path in images_dir.iterdir() if path.is_file() and path.suffix.lower() in IMAGE_EXTS],
@@ -106,6 +108,7 @@ def dataset_images(profile: str = DEFAULT_PROFILE, split: str = "train", page: i
 
 @router.post("/api/dataset/labels")
 def save_dataset_labels(payload: SaveLabelsRequest) -> dict[str, Any]:
+    resolve_profile(payload.profile)
     images_dir, labels_dir = split_paths(payload.profile, payload.split)
     valid_class_ids = {item["id"] for item in profile_classes(payload.profile)}
     invalid_boxes = [box.class_id for box in payload.boxes if box.class_id not in valid_class_ids]
@@ -135,6 +138,7 @@ def save_dataset_labels(payload: SaveLabelsRequest) -> dict[str, Any]:
 
 @router.delete("/api/dataset/images/{profile}/{split}/{filename}")
 def delete_dataset_image(profile: str, split: str, filename: str) -> dict[str, Any]:
+    profile = resolve_profile(profile)
     images_dir, labels_dir = split_paths(profile, split)
     image_name = safe_filename(filename)
     image_path = images_dir / image_name

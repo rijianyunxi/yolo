@@ -17,7 +17,7 @@ from ..services.predictions import (
     predict_tasks_lock,
     prediction_task_payload,
 )
-from ..services.profiles import profile_config
+from ..services.profiles import resolve_profile
 
 router = APIRouter()
 
@@ -28,7 +28,7 @@ def predict(
     conf: float = Form(0.25),
     profile: str = Form(DEFAULT_PROFILE),
 ) -> dict[str, Any]:
-    profile_config(profile)
+    profile = resolve_profile(profile)
     suffix = Path(file.filename or "upload.jpg").suffix.lower()
     if suffix not in IMAGE_EXTS:
         raise HTTPException(status_code=400, detail="仅支持图片文件")
