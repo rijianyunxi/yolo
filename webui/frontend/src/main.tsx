@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
   Activity,
+  AlertTriangle,
   CheckCircle2,
   FileImage,
   FolderOpen,
@@ -76,9 +77,11 @@ function App() {
   const [annotationPage, setAnnotationPage] = useState(1);
   const [annotationTotal, setAnnotationTotal] = useState(0);
   const [annotationPageCount, setAnnotationPageCount] = useState(0);
-  const annotationCache = useRef<{ profile: string; split: Split; pages: Map<number, DatasetImage[]> }>({
+  const [annotationLabelFilter, setAnnotationLabelFilter] = useState<'all' | 'labeled' | 'unlabeled'>('all');
+  const annotationCache = useRef<{ profile: string; split: Split; label: 'all' | 'labeled' | 'unlabeled'; pages: Map<number, DatasetImage[]> }>({
     profile: '',
     split: 'train',
+    label: 'all',
     pages: new Map(),
   });
   const [selectedImage, setSelectedImage] = useState<DatasetImage | null>(null);
@@ -89,6 +92,7 @@ function App() {
   const [datasetMessage, setDatasetMessage] = useState('');
   const [photoMessage, setPhotoMessage] = useState('');
   const [annotationMessage, setAnnotationMessage] = useState('');
+  const [saveDialog, setSaveDialog] = useState<{ kind: 'success' | 'error'; message: string } | null>(null);
   const [predictionMessage, setPredictionMessage] = useState('');
   const [confidence, setConfidence] = useState('0.25');
   const [predictionLimit, setPredictionLimit] = useState('48');
@@ -151,8 +155,8 @@ function App() {
   }, [annotateProfile, annotateSplit]);
 
   useEffect(() => {
-    if (menu === 'annotate') void loadAnnotationImages(annotateSplit, annotationPage);
-  }, [annotateProfile, annotationPage, annotateSplit, menu]);
+    if (menu === 'annotate') void loadAnnotationImages(annotateSplit, annotationPage, annotationLabelFilter);
+  }, [annotateProfile, annotationLabelFilter, annotationPage, annotateSplit, menu]);
 
   useEffect(() => {
     if (menu !== 'annotate') setAnnotateProfile(datasetProfile);
@@ -298,11 +302,12 @@ function App() {
     }
   }
 
-  async function loadAnnotationImages(split: Split, page: number, force = false) {
+  async function loadAnnotationImages(split: Split, page: number, label: 'all' | 'labeled' | 'unlabeled' = 'all', force = false) {
     const cache = annotationCache.current;
-    if (force || cache.profile !== annotateProfile || cache.split !== split) {
+    if (force || cache.profile !== annotateProfile || cache.split !== split || cache.label !== label) {
       cache.profile = annotateProfile;
       cache.split = split;
+      cache.label = label;
       cache.pages.clear();
     }
     const cached = cache.pages.get(page);
@@ -310,7 +315,7 @@ function App() {
       let images = cached;
       if (!images) {
         const response = await api.get<AnnotationImagePage>(
-          `/api/dataset/images?profile=${annotateProfile}&split=${split}&page=${page}&page_size=60`
+          `/api/dataset/images?profile=${annotateProfile}&split=${split}&page=${page}&page_size=60&label=${label}`
         );
         images = response.images;
         cache.pages.set(page, images);
@@ -360,7 +365,7 @@ function App() {
       setMessage(`导入完成：${response.savedImages.length} 张图片，${response.savedLabels.length} 个标签文件。`);
       await refreshStatus();
       await loadManagedImages(photoSplit, photoPage);
-      await loadAnnotationImages(annotateSplit, annotationPage, true);
+      await loadAnnotationImages(annotateSplit, annotationPage, annotationLabelFilter, true);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : '导入失败');
     }
@@ -373,7 +378,7 @@ function App() {
       setPhotoMessage(`已删除：${image.name}`);
       await refreshStatus();
       await loadManagedImages(photoSplit, photoPage);
-      await loadAnnotationImages(annotateSplit, annotationPage, true);
+      await loadAnnotationImages(annotateSplit, annotationPage, annotationLabelFilter, true);
     } catch (error) {
       setPhotoMessage(error instanceof Error ? error.message : '删除失败');
     }
@@ -398,12 +403,19 @@ function App() {
       const updated = response.image;
       setSelectedImage(updated);
       setAnnotationBoxes(updated.boxes);
-      setAnnotationMessage(`已保存 ${updated.labelCount} 个标注框。`);
+      const saveMessage = `已保存 ${updated.labelCount} 个标注框。`;
+      setAnnotationMessage(saveMessage);
+      setSaveDialog({ kind: 'success', message: saveMessage });
       updateCachedAnnotationImage(updated);
       setSelectedBoxIndex(null);
       await refreshStatus();
+      if (annotationLabelFilter === 'unlabeled' && updated.hasLabel) {
+        await loadAnnotationImages(annotateSplit, annotationPage, annotationLabelFilter, true);
+      }
     } catch (error) {
-      setAnnotationMessage(error instanceof Error ? error.message : '保存标注失败');
+      const saveMessage = error instanceof Error ? error.message : '保存标注失败';
+      setAnnotationMessage(saveMessage);
+      setSaveDialog({ kind: 'error', message: `保存失败：${saveMessage}` });
     }
   }
 
@@ -907,6 +919,17 @@ function App() {
                   </option>
                 ))}
               </select>
+              <select
+                value={annotationLabelFilter}
+                onChange={(event) => {
+                  setAnnotationPage(1);
+                  setAnnotationLabelFilter(event.target.value as 'all' | 'labeled' | 'unlabeled');
+                }}
+              >
+                <option value="all">全部图片</option>
+                <option value="unlabeled">未标注</option>
+                <option value="labeled">已标注</option>
+              </select>
               <div className="annotation-image-list">
                 {annotationImages.map((image) => (
                   <button
@@ -1286,6 +1309,24 @@ function App() {
                 </button>
               </div>
               <pre className="log-box">{historyLog.log || '无日志内容。'}</pre>
+            </div>
+          </div>
+        ) : null}
+
+        {saveDialog ? (
+          <div className="modal-overlay" onClick={() => setSaveDialog(null)}>
+            <div className="modal save-dialog" onClick={(event) => event.stopPropagation()}>
+              <div className="modal-head">
+                <h3>保存标注</h3>
+                <button type="button" className="btn" onClick={() => setSaveDialog(null)}>
+                  <X size={16} />
+                  关闭
+                </button>
+              </div>
+              <div className={`save-dialog-body ${saveDialog.kind}`}>
+                {saveDialog.kind === 'success' ? <CheckCircle2 size={28} /> : <AlertTriangle size={28} />}
+                <span>{saveDialog.message}</span>
+              </div>
             </div>
           </div>
         ) : null}

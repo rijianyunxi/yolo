@@ -77,13 +77,16 @@ async def upload_dataset(
 
 
 @router.get("/api/dataset/images")
-def dataset_images(profile: str = DEFAULT_PROFILE, split: str = "train", page: int = 1, page_size: int = 60) -> dict[str, Any]:
+def dataset_images(profile: str = DEFAULT_PROFILE, split: str = "train", page: int = 1, page_size: int = 60, label: str = "all") -> dict[str, Any]:
     profile = resolve_profile(profile)
-    images_dir, _ = split_paths(profile, split)
+    images_dir, labels_dir = split_paths(profile, split)
     all_images = sorted(
         [path for path in images_dir.iterdir() if path.is_file() and path.suffix.lower() in IMAGE_EXTS],
         key=lambda item: item.name.lower(),
     )
+    if label in ("labeled", "unlabeled"):
+        want_label = label == "labeled"
+        all_images = [p for p in all_images if (labels_dir / f"{p.stem}.txt").exists() == want_label]
     total = len(all_images)
     page = max(1, page)
     page_size = min(max(1, page_size), 200)
