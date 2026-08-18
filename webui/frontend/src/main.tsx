@@ -241,9 +241,9 @@ function App() {
     }
   }
 
-  async function loadAnnotationImages(split: Split, page: number) {
+  async function loadAnnotationImages(split: Split, page: number, force = false) {
     const cache = annotationCache.current;
-    if (cache.profile !== annotateProfile || cache.split !== split) {
+    if (force || cache.profile !== annotateProfile || cache.split !== split) {
       cache.profile = annotateProfile;
       cache.split = split;
       cache.pages.clear();
@@ -302,7 +302,7 @@ function App() {
       setMessage(`导入完成：${response.savedImages.length} 张图片，${response.savedLabels.length} 个标签文件。`);
       await refreshStatus();
       await loadManagedImages(photoSplit, photoPage);
-      await loadAnnotationImages(annotateSplit, annotationPage);
+      await loadAnnotationImages(annotateSplit, annotationPage, true);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : '导入失败');
     }
@@ -315,7 +315,7 @@ function App() {
       setPhotoMessage(`已删除：${image.name}`);
       await refreshStatus();
       await loadManagedImages(photoSplit, photoPage);
-      await loadAnnotationImages(annotateSplit, annotationPage);
+      await loadAnnotationImages(annotateSplit, annotationPage, true);
     } catch (error) {
       setPhotoMessage(error instanceof Error ? error.message : '删除失败');
     }
@@ -337,14 +337,34 @@ function App() {
           height: box.height,
         })),
       });
-      setSelectedImage(response.image);
-      setAnnotationBoxes(response.image.boxes);
-      setAnnotationMessage(`已保存 ${response.image.labelCount} 个标注框。`);
+      const updated = response.image;
+      setSelectedImage(updated);
+      setAnnotationBoxes(updated.boxes);
+      setAnnotationMessage(`已保存 ${updated.labelCount} 个标注框。`);
+      updateCachedAnnotationImage(updated);
       await refreshStatus();
-      await loadAnnotationImages(annotateSplit, annotationPage);
     } catch (error) {
       setAnnotationMessage(error instanceof Error ? error.message : '保存标注失败');
     }
+  }
+
+  function updateCachedAnnotationImage(updated: DatasetImage) {
+    const cache = annotationCache.current;
+    for (const [page, images] of cache.pages) {
+      const index = images.findIndex(
+        (item) => item.name === updated.name && item.split === updated.split
+      );
+      if (index >= 0) {
+        const next = [...images];
+        next[index] = updated;
+        cache.pages.set(page, next);
+      }
+    }
+    setAnnotationImages((current) =>
+      current.map((item) =>
+        item.name === updated.name && item.split === updated.split ? updated : item
+      )
+    );
   }
 
   async function predict(form: FormData) {
