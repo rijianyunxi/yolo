@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import torch
+from fastapi import HTTPException
 
 from ..config import IMAGE_EXTS, MAX_PREDICT_LIMIT, MAX_PREDICT_QUEUE, ROOT, predict_lock
 from .models import load_model, newest_best_model
@@ -39,7 +40,8 @@ predict_tasks_lock = threading.Lock()
 def list_predictions(limit: int = 48, since: float | None = None, until: float | None = None) -> list[dict[str, Any]]:
     limit = min(max(1, limit), MAX_PREDICT_LIMIT)
     files = []
-    for path in (ROOT / "runs").glob("**/*"):
+    runs_root = ROOT / "runs"
+    for path in runs_root.glob("web_predict_*/*"):
         if path.is_file() and path.suffix.lower() in IMAGE_EXTS:
             try:
                 rel = path.relative_to(ROOT).as_posix()
@@ -57,6 +59,39 @@ def list_predictions(limit: int = 48, since: float | None = None, until: float |
                 "mtime": mtime,
             })
     return sorted(files, key=lambda item: item["mtime"], reverse=True)[:limit]
+
+
+def delete_prediction_records(paths: list[str]) -> dict[str, Any]:
+    runs_root = ROOT / "runs"
+    deleted: list[str] = []
+    not_found: list[str] = []
+    for rel in paths:
+        try:
+            resolved = (ROOT / rel).resolve(strict=False)
+        except Exception:
+            not_found.append(rel)
+            continue
+        # 只允许删除 web_predict_* 目录下的预测结果文件
+        if not (
+            resolved.is_file()
+            and resolved.suffix.lower() in IMAGE_EXTS
+            and resolved.parent.parent == runs_root
+            and resolved.parent.name.startswith("web_predict_")
+        ):
+            not_found.append(rel)
+            continue
+        parent = resolved.parent
+        resolved.unlink(missing_ok=True)
+        # 尝试清理空目录
+        if parent.exists():
+            try:
+                parent.rmdir()
+            except OSError:
+                pass
+        deleted.append(rel)
+    if not deleted and not_found:
+        raise HTTPException(status_code=404, detail="未找到要删除的预测结果")
+    return {"deleted": deleted, "notFound": not_found}
 
 
 def prediction_task_payload(task: PredictionTask, include_predictions: bool = False) -> dict[str, Any]:

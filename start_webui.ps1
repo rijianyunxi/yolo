@@ -28,9 +28,34 @@ if ($oldPids.Count -gt 0) {
     Write-Host "[port-check] Port $Port is free, starting service."
 }
 
-$pidFile = Join-Path (Get-Location) "webui\uvicorn.pid"
+$pidFile = Join-Path $PSScriptRoot "webui\uvicorn.pid"
 if (Test-Path -LiteralPath $pidFile) {
     Remove-Item -LiteralPath $pidFile -Force -ErrorAction SilentlyContinue
+}
+
+# 启动前自动构建 React 前端，保证 /prediction 等页面使用最新源码
+$Frontend = Join-Path $PSScriptRoot "webui\frontend"
+if ((Test-Path -LiteralPath (Join-Path $Frontend "package.json")) -and (Get-Command npm -ErrorAction SilentlyContinue)) {
+    Write-Host "[frontend] Preparing React frontend..."
+    Push-Location $Frontend
+    try {
+        if (-not (Test-Path -LiteralPath "node_modules")) {
+            Write-Host "[frontend] Installing dependencies..."
+            npm install
+            if ($LASTEXITCODE -ne 0) {
+                throw "npm install failed with exit code $LASTEXITCODE"
+            }
+        }
+        Write-Host "[frontend] Building React frontend..."
+        npm run build
+        if ($LASTEXITCODE -ne 0) {
+            throw "npm run build failed with exit code $LASTEXITCODE"
+        }
+    } finally {
+        Pop-Location
+    }
+} else {
+    Write-Warning "[frontend] npm not found or package.json missing, skip frontend build."
 }
 
 $server = Start-Process -FilePath $Python -ArgumentList "-m", "uvicorn", "webui.app:app", "--host", $HostAddress, "--port", $Port -WorkingDirectory (Get-Location) -WindowStyle Hidden -PassThru

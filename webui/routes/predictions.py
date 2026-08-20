@@ -7,10 +7,12 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from pydantic import BaseModel
 
 from ..config import DEFAULT_PROFILE, IMAGE_EXTS, MAX_UPLOAD_BYTES, UPLOADS
 from ..services.predictions import (
     PredictionTask,
+    delete_prediction_records,
     list_predictions,
     predict_queue,
     predict_tasks,
@@ -20,6 +22,10 @@ from ..services.predictions import (
 from ..services.profiles import resolve_profile
 
 router = APIRouter()
+
+
+class DeletePredictionRequest(BaseModel):
+    paths: list[str]
 
 
 @router.post("/api/predict")
@@ -77,3 +83,8 @@ def prediction_task(task_id: str) -> dict[str, Any]:
 @router.get("/api/predictions")
 def predictions(limit: int = 48, since: float | None = None, until: float | None = None) -> dict[str, Any]:
     return {"predictions": list_predictions(limit, since, until)}
+
+
+@router.post("/api/predictions/delete")
+def delete_predictions(payload: DeletePredictionRequest) -> dict[str, Any]:
+    return delete_prediction_records(payload.paths)

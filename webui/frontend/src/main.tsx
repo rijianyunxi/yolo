@@ -98,6 +98,9 @@ function App() {
   const [predictionMessage, setPredictionMessage] = useState('');
   const [confidence, setConfidence] = useState('0.25');
   const [predictionLimit, setPredictionLimit] = useState('48');
+  const [selectedPredictionPaths, setSelectedPredictionPaths] = useState<string[]>([]);
+  const [previewPredictionUrl, setPreviewPredictionUrl] = useState<string | null>(null);
+  const [localFileUrl, setLocalFileUrl] = useState<string | null>(null);
   const [logAuto, setLogAuto] = useState(true);
 
   const task = liveTask ?? status?.task ?? null;
@@ -269,6 +272,41 @@ function App() {
     const response = await api.get<{ predictions: PredictionItem[] }>(`/api/predictions?limit=${limit}`);
     setPredictions(response.predictions);
   }
+  function togglePredictionSelection(path: string) {
+    setSelectedPredictionPaths((current) =>
+      current.includes(path) ? current.filter((item) => item !== path) : [...current, path]
+    );
+  }
+
+  function toggleSelectAllPredictions() {
+    setSelectedPredictionPaths((current) => {
+      const allSelected = predictions.every((item) => current.includes(item.path));
+      return allSelected
+        ? current.filter((path) => !predictions.some((item) => item.path === path))
+        : Array.from(new Set([...current, ...predictions.map((item) => item.path)]));
+    });
+  }
+
+  function handlePredictionFileChange(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (localFileUrl) URL.revokeObjectURL(localFileUrl);
+    setLocalFileUrl(file ? URL.createObjectURL(file) : null);
+  }
+
+  async function deleteSelectedPredictions() {
+    if (!selectedPredictionPaths.length) return;
+    if (!window.confirm(`确定删除选中的 ${selectedPredictionPaths.length} 条预测结果吗？`)) return;
+    try {
+      const response = await api.postJson<{ deleted: string[] }>('/api/predictions/delete', {
+        paths: selectedPredictionPaths,
+      });
+      setPredictionMessage(`已删除 ${response.deleted.length} 条预测结果。`);
+      setSelectedPredictionPaths([]);
+      await refreshPredictions();
+    } catch (error) {
+      setPredictionMessage(error instanceof Error ? error.message : '删除预测结果失败');
+    }
+  }
 
   async function refreshPredictionTasks() {
     try {
@@ -394,44 +432,44 @@ function App() {
       setPhotoMessage(error instanceof Error ? error.message : '删除失败');
     }
   }
-function togglePhotoSelection(name: string) {
-      setSelectedPhotoNames((current) =>
-        current.includes(name) ? current.filter((item) => item !== name) : [...current, name]
-      );
-    }
+  function togglePhotoSelection(name: string) {
+    setSelectedPhotoNames((current) =>
+      current.includes(name) ? current.filter((item) => item !== name) : [...current, name]
+    );
+  }
 
-    function toggleSelectAllPhotos() {
-      setSelectedPhotoNames((current) =>
-        (() => {
-            const currentNames = new Set(managedImages.map((item) => item.name));
-            const allCurrentSelected = managedImages.every((item) => current.includes(item.name));
-            return allCurrentSelected
-              ? current.filter((name) => !currentNames.has(name))
-              : Array.from(new Set([...current, ...currentNames]));
-          })()
-          // ? []
-          // : managedImages.map((item) => item.name)
-      );
-    }
+  function toggleSelectAllPhotos() {
+    setSelectedPhotoNames((current) =>
+      (() => {
+        const currentNames = new Set(managedImages.map((item) => item.name));
+        const allCurrentSelected = managedImages.every((item) => current.includes(item.name));
+        return allCurrentSelected
+          ? current.filter((name) => !currentNames.has(name))
+          : Array.from(new Set([...current, ...currentNames]));
+      })()
+      // ? []
+      // : managedImages.map((item) => item.name)
+    );
+  }
 
-    async function deleteSelectedPhotos() {
-      if (!selectedPhotoNames.length) return;
-      if (!window.confirm(`确定删除选中的 ${selectedPhotoNames.length} 张图片吗？图片和同名标签都会删除。`)) return;
-      try {
-        const response = await api.postJson<{ deleted: string[] }>('/api/dataset/images/batch-delete', {
-          profile: datasetProfile,
-          split: photoSplit,
-          filenames: selectedPhotoNames,
-        });
-        setPhotoMessage(`已批量删除 ${response.deleted.length} 张图片。`);
+  async function deleteSelectedPhotos() {
+    if (!selectedPhotoNames.length) return;
+    if (!window.confirm(`确定删除选中的 ${selectedPhotoNames.length} 张图片吗？图片和同名标签都会删除。`)) return;
+    try {
+      const response = await api.postJson<{ deleted: string[] }>('/api/dataset/images/batch-delete', {
+        profile: datasetProfile,
+        split: photoSplit,
+        filenames: selectedPhotoNames,
+      });
+      setPhotoMessage(`已批量删除 ${response.deleted.length} 张图片。`);
       setSelectedPhotoNames([]);
-        await refreshStatus();
-        await loadManagedImages(photoSplit, photoPage);
-        await loadAnnotationImages(annotateSplit, annotationPage, annotationLabelFilter, true);
-      } catch (error) {
-        setPhotoMessage(error instanceof Error ? error.message : '批量删除失败');
-      }
+      await refreshStatus();
+      await loadManagedImages(photoSplit, photoPage);
+      await loadAnnotationImages(annotateSplit, annotationPage, annotationLabelFilter, true);
+    } catch (error) {
+      setPhotoMessage(error instanceof Error ? error.message : '批量删除失败');
     }
+  }
 
   async function saveAnnotation() {
     if (!selectedImage) return;
@@ -1171,7 +1209,7 @@ function togglePhotoSelection(name: string) {
                 <span className="pill">{predictions.length} 个输出结果</span>
               </div>
               <form
-                className="form-grid predict-grid"
+                className="prediction-form"
                 onSubmit={(event) => {
                   event.preventDefault();
                   const input = (event.currentTarget.elements.namedItem('file') as HTMLInputElement).files;
@@ -1182,22 +1220,108 @@ function togglePhotoSelection(name: string) {
                   form.append('profile', datasetProfile);
                   void predict(form);
                   event.currentTarget.reset();
+                  if (localFileUrl) URL.revokeObjectURL(localFileUrl);
+                  setLocalFileUrl(null);
                 }}
               >
                 <label>
                   选择测试图片
-                  <input name="file" type="file" accept="image/*" />
+                  <input name="file" type="file" accept="image/*" onChange={handlePredictionFileChange} />
+                  {localFileUrl ? (
+                    <img src={localFileUrl} alt="待预测图片预览" className="prediction-upload-preview" />
+                  ) : (
+                    <div className="prediction-upload-placeholder">
+                      <ImagePlus size={28} />
+                      <span>点击选择图片</span>
+                    </div>
+                  )}
                 </label>
-                <label>
-                  置信度阈值
-                  <input value={confidence} onChange={(event) => setConfidence(event.target.value)} type="number" min="0.01" max="0.99" step="0.01" />
-                </label>
-                <button type="submit" className="primary" disabled={predicting}>
-                  <FileImage size={16} />
-                  {predicting ? '已提交，排队中...' : '开始预测'}
-                </button>
+                <div className="prediction-controls">
+                  <label>
+                    置信度阈值
+                    <input value={confidence} onChange={(event) => setConfidence(event.target.value)} type="number" min="0.01" max="0.99" step="0.01" />
+                  </label>
+                  <button type="submit" className="primary" disabled={predicting}>
+                    <FileImage size={16} />
+                    {predicting ? '已提交，排队中...' : '开始预测'}
+                  </button>
+                </div>
               </form>
               <p className="help">{predictionMessage || '优先使用当前数据集配置对应的 best.pt；如果还没有训练模型，则使用 yolo11n.pt 预训练模型并明确提示。'}</p>
+              <div className="prediction-results">
+                <div className="prediction-results-head">
+                  <div>
+                    <h3>预测结果</h3>
+                    <p className="annotation-help">点击图片可预览，可勾选后批量删除。</p>
+                  </div>
+                  <div className="inline-controls">
+                    <label className="switch">
+                      <input
+                        type="checkbox"
+                        checked={predictions.length > 0 && predictions.every((item) => selectedPredictionPaths.includes(item.path))}
+                        onChange={toggleSelectAllPredictions}
+                      />
+                      全选
+                    </label>
+                    <label className="inline-field">
+                      数量上限
+                      <input
+                        type="number"
+                        min="1"
+                        max="200"
+                        value={predictionLimit}
+                        onChange={(event) => setPredictionLimit(event.target.value)}
+                      />
+                    </label>
+                    <button type="button" className="btn" onClick={() => void refreshPredictions()}>
+                      <RefreshCw size={16} />
+                      刷新结果
+                    </button>
+                    <button
+                      type="button"
+                      className="btn danger"
+                      disabled={!selectedPredictionPaths.length}
+                      onClick={() => void deleteSelectedPredictions()}
+                    >
+                      <Trash2 size={16} />
+                      删除{selectedPredictionPaths.length ? ` (${selectedPredictionPaths.length})` : ''}
+                    </button>
+                  </div>
+                </div>
+                {predictions.length ? (
+                  <div className="prediction-grid">
+                    {predictions.map((item) => (
+                      <article
+                        key={item.path}
+                        className={selectedPredictionPaths.includes(item.path) ? 'prediction-card selected' : 'prediction-card'}
+                      >
+                        <label className="prediction-card-select">
+                          <input
+                            type="checkbox"
+                            checked={selectedPredictionPaths.includes(item.path)}
+                            onChange={() => togglePredictionSelection(item.path)}
+                          />
+                          <span>选择</span>
+                        </label>
+                        <img
+                          src={item.url}
+                          alt={item.name}
+                          onClick={() => setPreviewPredictionUrl(item.url)}
+                        />
+                        <div className="prediction-card-body">
+                          <strong>{item.name}</strong>
+                          <span>{formatTime(item.mtime)}</span>
+                          <button type="button" className="btn" onClick={() => setPreviewPredictionUrl(item.url)}>
+                            预览
+                          </button>
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="empty">暂时没有预测结果。</div>
+                )}
+              </div>
             </section>
 
             <section className="panel">
@@ -1247,37 +1371,6 @@ function togglePhotoSelection(name: string) {
               )}
             </section>
 
-            <section className="panel">
-              <div className="panel-head">
-                <h2>预测结果</h2>
-                <label className="inline-field">
-                  数量上限
-                  <input
-                    type="number"
-                    min="1"
-                    max="200"
-                    value={predictionLimit}
-                    onChange={(event) => setPredictionLimit(event.target.value)}
-                  />
-                </label>
-                <button type="button" className="btn" onClick={() => void refreshPredictions()}>
-                  <RefreshCw size={16} />
-                  刷新结果
-                </button>
-              </div>
-              <div className="gallery">
-                {predictions.length ? (
-                  predictions.map((item) => (
-                    <a key={item.path} className="gallery-item" href={item.url} target="_blank" rel="noreferrer">
-                      <img src={item.url} alt={item.name} />
-                      <span>{item.name}</span>
-                    </a>
-                  ))
-                ) : (
-                  <div className="empty">暂时没有预测结果。</div>
-                )}
-              </div>
-            </section>
           </section>
         ) : null}
 
@@ -1367,6 +1460,21 @@ function togglePhotoSelection(name: string) {
               </table>
             </section>
           </section>
+        ) : null}
+
+        {previewPredictionUrl ? (
+          <div className="modal-overlay" onClick={() => setPreviewPredictionUrl(null)}>
+            <div className="modal prediction-preview-modal" onClick={(event) => event.stopPropagation()}>
+              <div className="modal-head">
+                <h3>预测结果预览</h3>
+                <button type="button" className="btn" onClick={() => setPreviewPredictionUrl(null)}>
+                  <X size={16} />
+                  关闭
+                </button>
+              </div>
+              <img src={previewPredictionUrl} alt="预测结果预览" className="prediction-preview-image" />
+            </div>
+          </div>
         ) : null}
 
         {historyLog ? (
