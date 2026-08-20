@@ -28,6 +28,14 @@ export const api = {
       signal,
     });
   },
+  putJson<T>(path: string, payload: unknown, signal?: AbortSignal): Promise<T> {
+    return fetchJson<T>(path, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal,
+    });
+  },
   remove<T>(path: string, signal?: AbortSignal): Promise<T> {
     return fetchJson<T>(path, { method: 'DELETE', signal });
   },

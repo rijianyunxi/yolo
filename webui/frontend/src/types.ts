@@ -1,5 +1,13 @@
 export type Split = 'train' | 'val' | 'test';
-export type MenuKey = 'overview' | 'dataset' | 'photos' | 'annotate' | 'training' | 'prediction' | 'logs';
+export type MenuKey =
+  | 'overview'
+  | 'dataset'
+  | 'photos'
+  | 'annotate'
+  | 'training'
+  | 'prediction'
+  | 'profiles'
+  | 'logs';
 
 export type Box = {
   classId: number;
@@ -125,4 +133,29 @@ export type PredictionTask = {
 export type HistoryLog = {
   taskId: string;
   log: string;
+};
+
+export type ProfileClassInput = {
+  name: string;
+  displayName: string;
+};
+
+export type ProfileInfo = {
+  id: string;
+  title: string;
+  configPath: string;
+  classes: Array<{ id: number; name: string; displayName: string }>;
+  classCount: number;
+  totalImages: number;
+  totalLabels: number;
+  ready: boolean;
+  bestModel: string | null;
+};
+
+export type TrainedModel = {
+  path: string;
+  name: string;
+  mtime: number;
+  size: number;
+  url: string;
 };

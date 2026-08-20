@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from .config import STATIC
-from .routes import datasets, files, predictions, status, tasks
+from .routes import datasets, files, predictions, profiles, status, tasks
 
 logger = logging.getLogger("webui")
 
@@ -16,6 +16,7 @@ app = FastAPI(title="YOLO 目标检测训练台")
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 app.include_router(status.router)
 app.include_router(tasks.router)
+app.include_router(profiles.router)
 app.include_router(datasets.router)
 app.include_router(predictions.router)
 app.include_router(files.router)

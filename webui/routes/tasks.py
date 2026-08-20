@@ -10,13 +10,8 @@ from pydantic import BaseModel
 
 from ..config import DEFAULT_PROFILE, PYTHON, ROOT, TASK_LOGS
 from ..services.profiles import profile_config, profile_run_prefix
-from ..services.tasks import (
-    current_task,
-    history_lock,
-    start_task,
-    task_history_store,
-    task_payload,
-)
+from ..services import tasks as tasks_service
+from ..services.tasks import history_lock, start_task, task_history_store, task_payload
 
 router = APIRouter()
 
@@ -27,7 +22,7 @@ class ProfileRequest(BaseModel):
 
 @router.get("/api/log")
 def log() -> dict[str, Any]:
-    task = current_task
+    task = tasks_service.current_task
     if not task or not task.log_path or not task.log_path.exists():
         return {"task": task_payload(task), "log": ""}
     text = task.log_path.read_text(encoding="utf-8", errors="replace")
@@ -36,7 +31,7 @@ def log() -> dict[str, Any]:
 
 @router.get("/api/task")
 def task() -> dict[str, Any]:
-    return {"task": task_payload(current_task)}
+    return {"task": task_payload(tasks_service.current_task)}
 
 
 @router.get("/api/tasks/history")
@@ -123,7 +118,7 @@ def run_full_train(payload: ProfileRequest) -> dict[str, Any]:
 
 @router.post("/api/tasks/stop")
 def stop_task() -> dict[str, Any]:
-    task = current_task
+    task = tasks_service.current_task
     if not task or task.status != "running" or not task.process:
         return {"task": task_payload(task)}
     if os.name == "nt":

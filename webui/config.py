@@ -49,6 +49,20 @@ def _discover_profiles() -> dict[str, dict[str, Any]]:
 
 DATASET_PROFILES = _discover_profiles()
 DEFAULT_PROFILE = next(iter(DATASET_PROFILES), "")
+
+
+def refresh_profiles() -> None:
+    """运行时重新发现数据集配置并更新内存快照，供增删改配置后调用。"""
+    global DEFAULT_PROFILE
+    discovered = _discover_profiles()
+    DATASET_PROFILES.clear()
+    DATASET_PROFILES.update(discovered)
+    if not DATASET_PROFILES:
+        DEFAULT_PROFILE = ""
+    elif DEFAULT_PROFILE not in DATASET_PROFILES:
+        DEFAULT_PROFILE = next(iter(DATASET_PROFILES))
+
+
 MAX_PREDICT_QUEUE = 5
 MAX_PREDICT_LIMIT = 200
 MAX_TASK_LOGS_TO_KEEP = 50

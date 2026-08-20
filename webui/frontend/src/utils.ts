@@ -7,6 +7,7 @@ export const MENU_PATHS: Record<MenuKey, string> = {
   annotate: '/annotate',
   training: '/training',
   prediction: '/prediction',
+  profiles: '/profiles',
   logs: '/logs',
 };
 
@@ -75,3 +76,31 @@ export function predictionTaskMessage(task: PredictionTask) {
 export function splitName(split: Split) {
   return split === 'train' ? '训练集 train' : split === 'val' ? '验证集 val' : '测试集 test';
 }
+export function formatBytes(value: number | null | undefined) {
+  if (!value || value <= 0) return '-';
+  if (value < 1024) return value + ' B';
+  if (value < 1024 * 1024) return (value / 1024).toFixed(1) + ' KB';
+  return (value / 1024 / 1024).toFixed(1) + ' MB';
+}
+
+export async function copyText(text: string) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    try {
+      const element = document.createElement('textarea');
+      element.value = text;
+      element.style.position = 'fixed';
+      element.style.opacity = '0';
+      document.body.appendChild(element);
+      element.select();
+      document.execCommand('copy');
+      document.body.removeChild(element);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+

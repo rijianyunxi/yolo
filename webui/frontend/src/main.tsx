@@ -4,15 +4,21 @@ import {
   Activity,
   AlertTriangle,
   CheckCircle2,
+  Copy,
+  Download,
+  Eye,
   FileImage,
   FolderOpen,
   ImagePlus,
   LayoutDashboard,
   ListChecks,
+  Pencil,
   PencilRuler,
   Play,
+  Plus,
   RefreshCw,
   Save,
+  Settings,
   TerminalSquare,
   Trash2,
   Upload,
@@ -32,13 +38,18 @@ import type {
   MenuKey,
   PredictionItem,
   PredictionTask,
+  ProfileClassInput,
+  ProfileInfo,
   Split,
   Status,
   Task,
+  TrainedModel,
 } from './types';
 import { api } from './api';
 import {
   MENU_PATHS,
+  copyText,
+  formatBytes,
   formatTime,
   menuFromLocation,
   predictionStatusName,
@@ -99,6 +110,17 @@ function App() {
   const [confidence, setConfidence] = useState('0.25');
   const [predictionLimit, setPredictionLimit] = useState('48');
   const [selectedPredictionPaths, setSelectedPredictionPaths] = useState<string[]>([]);
+  const [profileList, setProfileList] = useState<ProfileInfo[]>([]);
+  const [profileModels, setProfileModels] = useState<Record<string, TrainedModel[]>>({});
+  const [profilesMessage, setProfilesMessage] = useState('');
+  const [showProfileForm, setShowProfileForm] = useState(false);
+  const [editingProfile, setEditingProfile] = useState<ProfileInfo | null>(null);
+  const [profileFormId, setProfileFormId] = useState('');
+  const [profileFormTitle, setProfileFormTitle] = useState('');
+  const [profileFormClasses, setProfileFormClasses] = useState<ProfileClassInput[]>([{ name: '', displayName: '' }]);
+  const [formError, setFormError] = useState('');
+  const [modelViewProfile, setModelViewProfile] = useState<string | null>(null);
+  const [modelLoading, setModelLoading] = useState(false);
   const [previewPredictionUrl, setPreviewPredictionUrl] = useState<string | null>(null);
   const [localFileUrl, setLocalFileUrl] = useState<string | null>(null);
   const [logAuto, setLogAuto] = useState(true);
@@ -163,6 +185,10 @@ function App() {
   useEffect(() => {
     if (menu === 'annotate') void loadAnnotationImages(annotateSplit, annotationPage, annotationLabelFilter);
   }, [annotateProfile, annotationLabelFilter, annotationPage, annotateSplit, menu]);
+
+  useEffect(() => {
+    if (menu === 'profiles') void loadProfiles();
+  }, [menu]);
 
   useEffect(() => {
     if (menu !== 'annotate') setAnnotateProfile(datasetProfile);
@@ -231,8 +257,8 @@ function App() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [menu, selectedImage, selectedBoxIndex]);
 
-  async function refreshStatus() {
-    const next = await api.get<Status>(`/api/status?profile=${datasetProfile}`);
+  async function refreshStatus(profileOverride?: string) {
+    const next = await api.get<Status>(`/api/status?profile=${profileOverride ?? datasetProfile}`);
     setStatus(next);
     setAnnotationClasses(next.classes);
     if (!next.classes.some((item) => item.id === selectedClassId)) {
@@ -314,6 +340,128 @@ function App() {
       setPredictionTasks(response.tasks);
     } catch {
       // 队列状态轮询失败可暂时忽略，下次刷新会重试
+    }
+  }
+
+
+  async function loadProfiles() {
+    try {
+      const response = await api.get<{ profiles: ProfileInfo[] }>('/api/profiles');
+      setProfileList(response.profiles);
+    } catch (error) {
+      setProfilesMessage(error instanceof Error ? error.message : '读取数据集配置失败');
+    }
+  }
+
+  async function loadProfileModels(profile: string) {
+    setModelLoading(true);
+    try {
+      const response = await api.get<{ models: TrainedModel[] }>(`/api/profiles/${encodeURIComponent(profile)}/models`);
+      setProfileModels((prev) => ({ ...prev, [profile]: response.models }));
+    } catch (error) {
+      setProfilesMessage(error instanceof Error ? error.message : '读取训练模型失败');
+    } finally {
+      setModelLoading(false);
+    }
+  }
+
+  async function openModelView(profile: string) {
+    setModelViewProfile(profile);
+    await loadProfileModels(profile);
+  }
+
+  function openCreateForm() {
+    setEditingProfile(null);
+    setProfileFormId('');
+    setProfileFormTitle('');
+    setProfileFormClasses([{ name: '', displayName: '' }]);
+    setFormError('');
+    setShowProfileForm(true);
+  }
+
+  function openEditForm(profile: ProfileInfo) {
+    setEditingProfile(profile);
+    setProfileFormId(profile.id);
+    setProfileFormTitle(profile.title);
+    setProfileFormClasses(profile.classes.map((item) => ({ name: item.name, displayName: item.displayName })));
+    setFormError('');
+    setShowProfileForm(true);
+  }
+
+  function updateClassRow(index: number, field: 'name' | 'displayName', value: string) {
+    setProfileFormClasses((prev) => prev.map((item, i) => (i === index ? { ...item, [field]: value } : item)));
+  }
+
+  function addClassRow() {
+    setProfileFormClasses((prev) => [...prev, { name: '', displayName: '' }]);
+  }
+
+  function removeClassRow(index: number) {
+    setProfileFormClasses((prev) => (prev.length > 1 ? prev.filter((_, i) => i !== index) : prev));
+  }
+
+  async function createProfile() {
+    const classes = profileFormClasses.filter((item) => item.name.trim());
+    const id = profileFormId.trim();
+    const title = profileFormTitle.trim();
+    if (!id) { setFormError('请填写配置 ID'); return; }
+    if (!title) { setFormError('请填写标题'); return; }
+    if (!classes.length) { setFormError('至少添加一个类别'); return; }
+    setBusy(true);
+    try {
+      const response = await api.postJson<{ profile: ProfileInfo }>('/api/profiles', {
+        id,
+        title,
+        classes: classes.map((item) => ({ name: item.name.trim(), displayName: item.displayName.trim() })),
+      });
+      setShowProfileForm(false);
+      setProfilesMessage('已创建数据集配置「' + response.profile.title + '」。');
+      setDatasetProfile(response.profile.id);
+      setProfileList((prev) => [...prev, response.profile]);
+      await refreshStatus(response.profile.id);
+      await loadProfiles();
+    } catch (error) {
+      setFormError(error instanceof Error ? error.message : '创建配置失败');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveProfile() {
+    if (!editingProfile) return;
+    const classes = profileFormClasses.filter((item) => item.name.trim());
+    const title = profileFormTitle.trim();
+    if (!title) { setFormError('请填写标题'); return; }
+    if (!classes.length) { setFormError('至少添加一个类别'); return; }
+    setBusy(true);
+    try {
+      const response = await api.putJson<{ profile: ProfileInfo }>(`/api/profiles/${encodeURIComponent(editingProfile.id)}`, {
+        title,
+        classes: classes.map((item) => ({ name: item.name.trim(), displayName: item.displayName.trim() })),
+      });
+      setShowProfileForm(false);
+      setProfilesMessage('已更新配置「' + response.profile.title + '」。');
+      setProfileList((prev) => prev.map((item) => (item.id === response.profile.id ? response.profile : item)));
+      await refreshStatus(response.profile.id);
+    } catch (error) {
+      setFormError(error instanceof Error ? error.message : '保存配置失败');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deleteProfile(profile: ProfileInfo) {
+    if (!window.confirm('确定删除数据集配置「' + profile.title + '」（' + profile.id + '）吗？')) return;
+    const deleteFiles = window.confirm('是否同时删除该配置下的数据集文件（图片/标签目录）？\n点“确定”删除全部，点“取消”只删除配置文件、保留数据文件。');
+    try {
+      await api.remove(`/api/profiles/${encodeURIComponent(profile.id)}?deleteFiles=${deleteFiles}`);
+      setProfilesMessage('已删除配置「' + profile.title + '」。');
+      setModelViewProfile((prev) => (prev === profile.id ? null : prev));
+      setProfileModels((prev) => { const next = { ...prev }; delete next[profile.id]; return next; });
+      await loadProfiles();
+      await refreshStatus();
+    } catch (error) {
+      setProfilesMessage(error instanceof Error ? error.message : '删除配置失败');
     }
   }
 
@@ -560,6 +708,7 @@ function App() {
     { key: 'dataset', label: '数据集导入', icon: <Upload size={18} /> },
     { key: 'photos', label: '训练图片', icon: <FolderOpen size={18} /> },
     { key: 'annotate', label: '在线标注', icon: <PencilRuler size={18} /> },
+    { key: 'profiles', label: '数据集配置', icon: <Settings size={18} /> },
     { key: 'training', label: '训练任务', icon: <Play size={18} /> },
     { key: 'prediction', label: '预测调试', icon: <FileImage size={18} /> },
     { key: 'logs', label: '日志与结果', icon: <TerminalSquare size={18} /> },
@@ -1372,6 +1521,228 @@ function App() {
             </section>
 
           </section>
+        ) : null}
+
+
+        {menu === 'profiles' ? (
+          <section className="page-stack">
+            <section className="panel">
+              <div className="panel-head">
+                <div>
+                  <h2>数据集配置管理</h2>
+                  <p className="annotation-help">管理 YOLO 数据集配置（新增 / 修改 / 删除），并可查看每个配置已训练好的模型。</p>
+                </div>
+                <button type="button" className="primary" onClick={openCreateForm}>
+                  <Plus size={16} />
+                  新增配置
+                </button>
+              </div>
+              <p className="help">
+                {profilesMessage || '共 ' + profileList.length + ' 个数据集配置，当前使用：' + (currentProfile?.title || datasetProfile) + '。'}
+              </p>
+              {profileList.length ? (
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>标题</th>
+                      <th>ID</th>
+                      <th>类别数</th>
+                      <th>图片 / 标签</th>
+                      <th>训练模型</th>
+                      <th>操作</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {profileList.map((profile) => (
+                      <tr key={profile.id} className={profile.id === datasetProfile ? 'active-row' : ''}>
+                        <td>
+                          <strong>{profile.title}</strong>{' '}
+                          {profile.id === datasetProfile ? <span className="pill">当前</span> : null}
+                        </td>
+                        <td><code>{profile.id}</code></td>
+                        <td>{profile.classCount}</td>
+                        <td>
+                          {profile.totalImages} / {profile.totalLabels}
+                        </td>
+                        <td>
+                          {profile.bestModel ? (
+                            <button type="button" className="btn" onClick={() => void openModelView(profile.id)}>
+                              <FolderOpen size={15} />
+                              查看模型
+                            </button>
+                          ) : (
+                            <span className="muted-text">暂无</span>
+                          )}
+                        </td>
+                        <td>
+                          <div className="row-actions">
+                            <button type="button" className="btn" onClick={() => openEditForm(profile)}>
+                              <Pencil size={14} />
+                              编辑
+                            </button>
+                            <button type="button" className="btn" onClick={() => void openModelView(profile.id)}>
+                              <Eye size={14} />
+                              模型
+                            </button>
+                            <button
+                              type="button"
+                              className="btn danger"
+                              disabled={profileList.length <= 1}
+                              onClick={() => void deleteProfile(profile)}
+                            >
+                              <Trash2 size={14} />
+                              删除
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <div className="empty">还没有数据集配置，请点击“新增配置”创建。</div>
+              )}
+            </section>
+
+            {modelViewProfile ? (
+              <section className="panel">
+                <div className="panel-head">
+                  <div>
+                    <h2>
+                      训练模型 — {profileList.find((item) => item.id === modelViewProfile)?.title || modelViewProfile}
+                    </h2>
+                    <p className="annotation-help">存放于 runs/{modelViewProfile}_yolo11n*/weights/best.pt 的已训练模型。</p>
+                  </div>
+                  <button type="button" className="btn" onClick={() => setModelViewProfile(null)}>
+                    <X size={15} />
+                    关闭
+                  </button>
+                </div>
+                {modelLoading ? (
+                  <div className="empty">正在读取模型列表...</div>
+                ) : profileModels[modelViewProfile]?.length ? (
+                  <table className="table">
+                    <thead>
+                      <tr>
+                        <th>运行目录</th>
+                        <th>修改时间</th>
+                        <th>大小</th>
+                        <th>路径</th>
+                        <th>操作</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {profileModels[modelViewProfile].map((model) => (
+                        <tr key={model.path}>
+                          <td>{model.name}</td>
+                          <td>{formatTime(model.mtime)}</td>
+                          <td>{formatBytes(model.size)}</td>
+                          <td className="command-cell">{model.path}</td>
+                          <td>
+                            <div className="row-actions">
+                              <a className="btn" href={model.url} download>
+                                <Download size={14} />
+                                下载
+                              </a>
+                              <button
+                                type="button"
+                                className="btn"
+                                onClick={() => {
+                                  void copyText(model.path);
+                                  setProfilesMessage('模型路径已复制到剪贴板。');
+                                }}
+                              >
+                                <Copy size={14} />
+                                复制路径
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                ) : (
+                  <div className="empty">该配置还没有训练模型。</div>
+                )}
+              </section>
+            ) : null}
+          </section>
+        ) : null}
+
+        {showProfileForm ? (
+          <div className="modal-overlay" onClick={() => setShowProfileForm(false)}>
+            <div className="modal profile-modal" onClick={(event) => event.stopPropagation()}>
+              <div className="modal-head">
+                <h2>{editingProfile ? '编辑配置：' + editingProfile.id : '新增数据集配置'}</h2>
+                <button type="button" className="btn icon-btn" onClick={() => setShowProfileForm(false)}>
+                  <X size={16} />
+                </button>
+              </div>
+              <div className="modal-body">
+                <label className="compact-field">
+                  <span>配置 ID（创建后不可修改）</span>
+                  <input
+                    value={profileFormId}
+                    disabled={!!editingProfile}
+                    onChange={(event) => setProfileFormId(event.target.value)}
+                    placeholder="例如 cat_det"
+                  />
+                </label>
+                <label className="compact-field">
+                  <span>标题</span>
+                  <input
+                    value={profileFormTitle}
+                    onChange={(event) => setProfileFormTitle(event.target.value)}
+                    placeholder="例如 猫检测"
+                  />
+                </label>
+                <div className="compact-field">
+                  <span>类别（显示名可留空，默认使用英文名）</span>
+                  {profileFormClasses.map((item, index) => (
+                    <div className="class-row" key={index}>
+                      <input
+                        value={item.name}
+                        placeholder={'类别 ' + index + '（英文名称）'}
+                        onChange={(event) => updateClassRow(index, 'name', event.target.value)}
+                      />
+                      <input
+                        value={item.displayName}
+                        placeholder="显示名（中文）"
+                        onChange={(event) => updateClassRow(index, 'displayName', event.target.value)}
+                      />
+                      <button
+                        type="button"
+                        className="btn icon-btn"
+                        disabled={profileFormClasses.length <= 1}
+                        onClick={() => removeClassRow(index)}
+                      >
+                        <X size={14} />
+                      </button>
+                    </div>
+                  ))}
+                  <button type="button" className="btn" onClick={addClassRow}>
+                    <Plus size={14} />
+                    添加类别
+                  </button>
+                </div>
+                {formError ? <p className="form-error">{formError}</p> : null}
+              </div>
+              <div className="modal-foot">
+                <button type="button" className="btn" onClick={() => setShowProfileForm(false)}>
+                  取消
+                </button>
+                <button
+                  type="button"
+                  className="primary"
+                  disabled={busy}
+                  onClick={() => void (editingProfile ? saveProfile() : createProfile())}
+                >
+                  <Save size={16} />
+                  {editingProfile ? '保存修改' : '创建配置'}
+                </button>
+              </div>
+            </div>
+          </div>
         ) : null}
 
         {menu === 'logs' ? (
