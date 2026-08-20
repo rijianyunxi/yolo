@@ -11,7 +11,8 @@ import torch
 from fastapi import HTTPException
 
 from ..config import IMAGE_EXTS, MAX_PREDICT_LIMIT, MAX_PREDICT_QUEUE, ROOT, predict_lock
-from .models import load_model, newest_best_model
+from .imported_models import resolve_model_selector
+from .models import load_model
 
 
 @dataclass
@@ -28,6 +29,7 @@ class PredictionTask:
     finished_at: float | None = None
     model: str | None = None
     model_source: str | None = None
+    model_selector: str = ""
     detections: list[dict[str, Any]] = field(default_factory=list)
     images: list[dict[str, Any]] = field(default_factory=list)
 
@@ -106,6 +108,7 @@ def prediction_task_payload(task: PredictionTask, include_predictions: bool = Fa
         "finishedAt": task.finished_at,
         "model": task.model,
         "modelSource": task.model_source,
+        "modelSelector": task.model_selector,
         "detections": task.detections,
         "images": task.images,
     }
@@ -116,11 +119,7 @@ def prediction_task_payload(task: PredictionTask, include_predictions: bool = Fa
 
 def run_prediction(task: PredictionTask) -> None:
     try:
-        best_model = newest_best_model(task.profile)
-        task.model_source = "trained" if best_model else "pretrained"
-        model_path = best_model or (ROOT / "yolo11n.pt")
-        if not model_path.exists():
-            raise FileNotFoundError("未找到可用模型")
+        model_path, task.model_source = resolve_model_selector(task.model_selector, task.profile)
         task.model = str(model_path)
         task.message = "推理中：正在使用模型生成检测结果..."
 

@@ -19,11 +19,16 @@ runs/
 *.pt
 
 # 数据集图片/标签（仅提交配置 yaml，不提交数据）
+# 标准布局: datasets/<name>/images/<split>
 datasets/*/images/
 datasets/*/labels/
+# Roboflow 布局: datasets/<name>/<split>/images（如 safety2）
+datasets/*/*/images/
+datasets/*/*/labels/
 
 # 测试/截图
 test_images/
+.tmp-pw/
 
 # 操作系统 / 编辑器
 .DS_Store

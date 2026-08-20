@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from .config import STATIC
-from .routes import datasets, files, predictions, profiles, status, tasks
+from .routes import datasets, files, models, predictions, profiles, status, tasks
 
 logger = logging.getLogger("webui")
 
@@ -18,6 +18,7 @@ app.include_router(status.router)
 app.include_router(tasks.router)
 app.include_router(profiles.router)
 app.include_router(datasets.router)
+app.include_router(models.router)
 app.include_router(predictions.router)
 app.include_router(files.router)
 

@@ -33,6 +33,7 @@ import type {
   ClassItem,
   DatasetImage,
   DatasetImagePage,
+  ImportedModelInfo,
   HistoryLog,
   LogPayload,
   MenuKey,
@@ -52,6 +53,7 @@ import {
   formatBytes,
   formatTime,
   menuFromLocation,
+  modelSourceName,
   predictionStatusName,
   predictionTaskMessage,
   shortPath,
@@ -110,6 +112,9 @@ function App() {
   const [confidence, setConfidence] = useState('0.25');
   const [predictionLimit, setPredictionLimit] = useState('48');
   const [selectedPredictionPaths, setSelectedPredictionPaths] = useState<string[]>([]);
+  const [importedModels, setImportedModels] = useState<ImportedModelInfo[]>([]);
+  const [selectedModel, setSelectedModel] = useState('');
+  const [importingModel, setImportingModel] = useState(false);
   const [profileList, setProfileList] = useState<ProfileInfo[]>([]);
   const [profileModels, setProfileModels] = useState<Record<string, TrainedModel[]>>({});
   const [profilesMessage, setProfilesMessage] = useState('');
@@ -188,6 +193,7 @@ function App() {
 
   useEffect(() => {
     if (menu === 'profiles') void loadProfiles();
+    if (menu === 'prediction') void loadImportedModels();
   }, [menu]);
 
   useEffect(() => {
@@ -700,6 +706,46 @@ function App() {
         return;
       }
       await new Promise((resolve) => setTimeout(resolve, 1200));
+    }
+  }
+
+  async function loadImportedModels() {
+    try {
+      const response = await api.get<{ models: ImportedModelInfo[] }>('/api/models/imported');
+      setImportedModels(response.models);
+    } catch (error) {
+      setPredictionMessage(error instanceof Error ? error.message : '读取导入模型失败');
+    }
+  }
+
+  async function handleImportModelChange(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    setImportingModel(true);
+    try {
+      const form = new FormData();
+      form.append('file', file);
+      const response = await api.post<{ model: ImportedModelInfo }>('/api/models/import', form);
+      await loadImportedModels();
+      setSelectedModel('imported:' + response.model.filename);
+      setPredictionMessage('已导入模型「' + response.model.name + '」，已选中用于测试。');
+    } catch (error) {
+      setPredictionMessage(error instanceof Error ? error.message : '导入模型失败');
+    } finally {
+      setImportingModel(false);
+      event.target.value = '';
+    }
+  }
+
+  async function removeImportedModel(model: ImportedModelInfo) {
+    if (!window.confirm('确定删除导入的模型「' + model.name + '」吗？')) return;
+    try {
+      await api.remove('/api/models/imported/' + encodeURIComponent(model.filename));
+      if (selectedModel === 'imported:' + model.filename) setSelectedModel('');
+      await loadImportedModels();
+      setPredictionMessage('已删除导入模型「' + model.name + '」。');
+    } catch (error) {
+      setPredictionMessage(error instanceof Error ? error.message : '删除模型失败');
     }
   }
 
@@ -1367,6 +1413,7 @@ function App() {
                   form.append('file', input[0]);
                   form.append('conf', confidence);
                   form.append('profile', datasetProfile);
+                  form.append('model', selectedModel);
                   void predict(form);
                   event.currentTarget.reset();
                   if (localFileUrl) URL.revokeObjectURL(localFileUrl);
@@ -1385,6 +1432,49 @@ function App() {
                     </div>
                   )}
                 </label>
+                <div className="model-source-block">
+                  <div className="model-source-row">
+                    <label className="compact-field">
+                      <span>测试模型</span>
+                      <select value={selectedModel} onChange={(event) => setSelectedModel(event.target.value)}>
+                        <option value="">自动（当前配置最佳 / 预训练）</option>
+                        <option value="pretrained">预训练模型 yolo11n.pt</option>
+                        {importedModels.map((model) => (
+                          <option key={model.filename} value={'imported:' + model.filename}>
+                            {'导入：' + model.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="btn import-model-btn">
+                      <Upload size={14} />
+                      {importingModel ? '导入中...' : '导入模型'}
+                      <input
+                        type="file"
+                        accept=".pt"
+                        style={{ display: 'none' }}
+                        onChange={(event) => void handleImportModelChange(event)}
+                      />
+                    </label>
+                  </div>
+                  {importedModels.length ? (
+                    <div className="imported-model-list">
+                      {importedModels.map((model) => (
+                        <span key={model.filename} className={'imported-model-chip' + (selectedModel === 'imported:' + model.filename ? ' active' : '')}>
+                          {model.name}（{(model.size / 1024 / 1024).toFixed(1)} MB）
+                          <button
+                            type="button"
+                            className="icon-btn"
+                            title="删除导入的模型"
+                            onClick={() => void removeImportedModel(model)}
+                          >
+                            <X size={13} />
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
                 <div className="prediction-controls">
                   <label>
                     置信度阈值
@@ -1507,7 +1597,7 @@ function App() {
                         </td>
                         <td>{profileOptions.find((option) => option.id === item.profile)?.title || item.profile}</td>
                         <td>
-                          {item.modelSource ? (item.modelSource === 'trained' ? '已训练模型' : '预训练模型') : '-'}
+                          {modelSourceName(item.modelSource)}
                         </td>
                         <td className="command-cell">{predictionTaskMessage(item)}</td>
                         <td>{formatTime(item.createdAt)}</td>

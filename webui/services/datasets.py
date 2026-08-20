@@ -31,10 +31,28 @@ def dataset_counts(profile: str = DEFAULT_PROFILE) -> dict[str, Any]:
     total_images = 0
     total_labels = 0
     for split in ("train", "val", "test"):
-        images_dir = dataset_root / "images" / split
-        labels_dir = dataset_root / "labels" / split
-        images = [p for p in images_dir.iterdir() if p.is_file() and p.suffix.lower() in IMAGE_EXTS]
-        labels = [p for p in labels_dir.glob("*.txt") if p.is_file()]
+        images_dir, labels_dir = resolve_split_dirs(dataset_root, split)
+        if not images_dir.exists():
+            splits[split] = {
+                "images": 0,
+                "labels": 0,
+                "missingLabels": [],
+                "orphanLabels": [],
+                "missingLabelCount": 0,
+                "orphanLabelCount": 0,
+            }
+            continue
+        images = []
+        try:
+            images = [p for p in images_dir.iterdir() if p.is_file() and p.suffix.lower() in IMAGE_EXTS]
+        except OSError:
+            images = []
+        labels = []
+        if labels_dir.exists():
+            try:
+                labels = [p for p in labels_dir.glob("*.txt") if p.is_file()]
+            except OSError:
+                labels = []
         image_stems = {p.stem for p in images}
         label_stems = {p.stem for p in labels}
         missing_labels = sorted(image_stems - label_stems)
@@ -75,11 +93,33 @@ def safe_filename(name: str) -> str:
     return result or f"file_{uuid.uuid4().hex[:8]}"
 
 
+def resolve_split_dirs(dataset_root: Path, split: str) -> tuple[Path, Path]:
+    """解析某个分组的图片/标签目录，兼容两种布局：
+    - 标准布局:  <root>/images/<split> 与 <root>/labels/<split>
+    - Roboflow 布局: <root>/<split_dir>/images 与 <root>/<split_dir>/labels
+      （split_dir 对于 val 可能是 valid）
+    优先返回实际存在的目录；都不存在时回退到标准布局路径。
+    """
+    split_dir_candidates: dict[str, list[str]] = {
+        "train": ["train"],
+        "val": ["valid", "val"],
+        "test": ["test"],
+    }
+    standard_images = dataset_root / "images" / split
+    if standard_images.exists():
+        return standard_images, dataset_root / "labels" / split
+    for split_dir in split_dir_candidates.get(split, [split]):
+        robo_images = dataset_root / split_dir / "images"
+        if robo_images.exists():
+            return robo_images, dataset_root / split_dir / "labels"
+    return standard_images, dataset_root / "labels" / split
+
+
 def split_paths(profile: str, split: str) -> tuple[Path, Path]:
     if split not in VALID_SPLITS:
         raise HTTPException(status_code=400, detail="无效的数据集分组")
     dataset_root = profile_config(profile)["root"]
-    return dataset_root / "images" / split, dataset_root / "labels" / split
+    return resolve_split_dirs(dataset_root, split)
 
 
 def parse_yolo_labels(label_path: Path) -> list[dict[str, Any]]:

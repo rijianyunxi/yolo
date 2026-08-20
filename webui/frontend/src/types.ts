@@ -108,7 +108,7 @@ export type AnnotationImagePage = DatasetImagePage & {
 export type PredictionResponse = {
   profile: string;
   model: string;
-  modelSource: 'trained' | 'pretrained';
+  modelSource: string;
   detections: Array<{ classId: number; name: string; confidence: number; xyxy: number[] }>;
   images: Array<{ name: string; url: string; path: string }>;
   predictions: PredictionItem[];
@@ -124,7 +124,7 @@ export type PredictionTask = {
   startedAt: number | null;
   finishedAt: number | null;
   model: string | null;
-  modelSource: 'trained' | 'pretrained' | null;
+  modelSource: string | null;
   detections: Array<{ classId: number; name: string; confidence: number; xyxy: number[] }>;
   images: Array<{ name: string; url: string; path: string }>;
   predictions?: PredictionItem[];
@@ -157,5 +157,14 @@ export type TrainedModel = {
   name: string;
   mtime: number;
   size: number;
+  url: string;
+};
+
+export type ImportedModelInfo = {
+  filename: string;
+  name: string;
+  path: string;
+  size: number;
+  mtime: number;
   url: string;
 };

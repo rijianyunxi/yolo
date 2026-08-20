@@ -1397,3 +1397,77 @@ position: relative;
   color: var(--danger);
   font-size: 13px;
 }
+
+
+/* ===== 导入模型在线测试 ===== */
+.model-source-block {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--border, #30363d) 60%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--panel, #161b22) 60%, transparent);
+}
+
+.model-source-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-end;
+  flex-wrap: wrap;
+}
+
+.model-source-row .compact-field {
+  flex: 1;
+  min-width: 220px;
+  display: grid;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--muted, #9da7b3);
+}
+
+.model-source-row select {
+  width: 100%;
+}
+
+.import-model-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.imported-model-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.imported-model-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px 3px 10px;
+  border: 1px solid color-mix(in srgb, var(--border, #30363d) 80%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--muted, #9da7b3) 8%, transparent);
+  font-size: 12px;
+}
+
+.imported-model-chip.active {
+  border-color: var(--primary, #2f81f7);
+  color: var(--primary, #2f81f7);
+}
+
+.imported-model-chip .icon-btn {
+  width: 22px;
+  min-height: 22px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--muted, #9da7b3);
+}
+
+.imported-model-chip .icon-btn:hover {
+  color: var(--danger, #f85149);
+}

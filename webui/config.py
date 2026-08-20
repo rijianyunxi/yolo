@@ -13,6 +13,7 @@ WEBUI = ROOT / "webui"
 STATIC = WEBUI / "static"
 UPLOADS = WEBUI / "uploads"
 TASK_LOGS = WEBUI / "task_logs"
+MODELS_DIR = ROOT / "models"
 TASK_HISTORY = WEBUI / "task_history.json"
 PYTHON = ROOT / ".venv" / "Scripts" / "python.exe"
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}

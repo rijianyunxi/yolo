@@ -33,6 +33,7 @@ def predict(
     file: UploadFile = File(...),
     conf: float = Form(0.25),
     profile: str = Form(DEFAULT_PROFILE),
+    model: str = Form(""),
 ) -> dict[str, Any]:
     profile = resolve_profile(profile)
     suffix = Path(file.filename or "upload.jpg").suffix.lower()
@@ -52,6 +53,7 @@ def predict(
         profile=profile,
         upload_path=upload_path,
         conf=conf,
+        model_selector=model,
         message="等待中：正在排队等待推理",
     )
     try:

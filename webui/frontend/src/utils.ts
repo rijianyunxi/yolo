@@ -62,9 +62,24 @@ export function predictionStatusName(status: PredictionTask['status']) {
   return names[status] || status;
 }
 
+export function modelSourceName(source: string | null | undefined) {
+  if (source === 'trained') return '已训练模型';
+  if (source === 'pretrained') return '预训练模型';
+  if (source && source.startsWith('imported:')) {
+    return '导入模型（' + source.slice('imported:'.length) + '）';
+  }
+  return '-';
+}
+
 export function predictionTaskMessage(task: PredictionTask) {
   const source =
-    task.modelSource === 'trained' ? '（已训练模型）' : task.modelSource === 'pretrained' ? '（预训练模型）' : '';
+    task.modelSource === 'trained'
+      ? '（已训练模型）'
+      : task.modelSource === 'pretrained'
+        ? '（预训练模型）'
+        : task.modelSource && task.modelSource.startsWith('imported:')
+          ? '（导入模型）'
+          : '';
   if (task.status === 'completed') {
     const labels = task.detections.map((item) => `${item.name} ${Math.round(item.confidence * 100)}%`).join('，');
     return labels ? `${task.message || '检测完成'}${source}：${labels}` : `${task.message || '未检测到目标'}${source}。`;

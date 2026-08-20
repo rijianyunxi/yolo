@@ -1,0 +1,13 @@
+train: ../train/images
+val: ../valid/images
+test: ../test/images
+
+nc: 5
+names: ['boots', 'gloves', 'helmet', 'human', 'vest']
+
+roboflow:
+  workspace: hx-hezqh
+  project: ppe-detection-yfmym
+  version: 1
+  license: CC BY 4.0
+  url: https://universe.roboflow.com/hx-hezqh/ppe-detection-yfmym/dataset/1
