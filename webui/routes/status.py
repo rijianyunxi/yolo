@@ -15,7 +15,8 @@ from ..config import DATASET_PROFILES, DEFAULT_PROFILE, ROOT
 from ..services.datasets import dataset_counts
 from ..services.models import newest_best_model
 from ..services.profiles import profile_classes, profile_config, resolve_profile
-from ..services.tasks import current_task, task_payload
+from ..services import tasks as tasks_service
+from ..services.tasks import task_payload
 
 router = APIRouter()
 
@@ -45,7 +46,7 @@ def status(profile: str = DEFAULT_PROFILE) -> dict[str, Any]:
         "pretrained": str(ROOT / "yolo11n.pt") if (ROOT / "yolo11n.pt").exists() else None,
         "bestModel": str(best) if best else None,
         "dataset": dataset_counts(profile),
-        "task": task_payload(current_task),
+        "task": task_payload(tasks_service.current_task),
     }
 
 

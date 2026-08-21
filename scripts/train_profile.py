@@ -18,6 +18,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--imgsz", type=int, default=640)
     parser.add_argument("--batch", type=int, default=8)
+    parser.add_argument("--device", default="auto", choices=("auto", "cpu", "cuda"))
+    parser.add_argument("--workers", type=int, default=0)
     parser.add_argument("--model", type=Path, default=ROOT / "yolo11n.pt")
     return parser.parse_args()
 
@@ -33,7 +35,9 @@ def main() -> None:
     if not model_path.exists():
         raise SystemExit(f"Base model not found: {model_path}")
 
-    device = 0 if torch.cuda.is_available() else "cpu"
+    if args.device == "cuda" and not torch.cuda.is_available():
+        raise SystemExit("CUDA device requested but CUDA is unavailable")
+    device = 0 if args.device in {"auto", "cuda"} and torch.cuda.is_available() else "cpu"
     print(f"Profile: {args.profile}")
     print(f"Dataset yaml: {data}")
     print(f"Base model: {model_path}")
@@ -48,7 +52,7 @@ def main() -> None:
         project=str(ROOT / "runs"),
         name=args.name,
         device=device,
-        workers=0,
+        workers=args.workers,
     )
 
 

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import hashlib
+import os
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -13,18 +16,59 @@ from ..config import (
     IMAGE_EXTS,
     MAX_UPLOAD_BYTES,
     ROOT,
+    THUMBNAILS_DIR,
     VALID_SPLITS,
     dataset_counts_cache,
+    dataset_counts_cache_stats,
     dataset_counts_ttl,
     image_dims_cache,
+    image_dims_cache_stats,
+    THUMBNAIL_CACHE_MAX_BYTES,
+    THUMBNAIL_CACHE_MAX_ENTRIES,
+    THUMBNAIL_CACHE_PRUNE_INTERVAL_SECONDS,
+    THUMBNAIL_CACHE_TTL_SECONDS,
+    thumbnail_cache_lock,
+    thumbnail_cache_stats,
 )
 from .profiles import profile_classes, profile_config
+
+
+_label_locks_guard = threading.Lock()
+_label_locks: dict[str, threading.Lock] = {}
+
+
+def _label_lock(label_path: Path) -> threading.Lock:
+    key = str(label_path.resolve())
+    with _label_locks_guard:
+        return _label_locks.setdefault(key, threading.Lock())
+
+
+def save_yolo_labels_atomic(label_path: Path, lines: list[str]) -> None:
+    """以原子替换方式保存标签，避免中断时留下半截文件。"""
+    label_path.parent.mkdir(parents=True, exist_ok=True)
+    lock = _label_lock(label_path)
+    temp_path = label_path.with_name(f".{label_path.name}.{uuid.uuid4().hex}.tmp")
+    content = "\n".join(lines) + ("\n" if lines else "")
+    with lock:
+        try:
+            temp_path.write_text(content, encoding="utf-8")
+            os.replace(temp_path, label_path)
+        finally:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def dataset_counts(profile: str = DEFAULT_PROFILE) -> dict[str, Any]:
     cached = dataset_counts_cache.get(profile)
     if cached and time.time() - cached[0] < dataset_counts_ttl:
+        dataset_counts_cache_stats["hits"] += 1
+        dataset_counts_cache_stats["entries"] = len(dataset_counts_cache)
         return cached[1]
+    if cached:
+        dataset_counts_cache_stats["expirations"] += 1
+    dataset_counts_cache_stats["misses"] += 1
 
     dataset_root = profile_config(profile)["root"]
     splits: dict[str, Any] = {}
@@ -76,11 +120,30 @@ def dataset_counts(profile: str = DEFAULT_PROFILE) -> dict[str, Any]:
         "ready": splits["train"]["images"] > 0 and splits["val"]["images"] > 0,
     }
     dataset_counts_cache[profile] = (time.time(), result)
+    dataset_counts_cache_stats["entries"] = len(dataset_counts_cache)
     return result
 
 
 def invalidate_dataset_counts(profile: str) -> None:
     dataset_counts_cache.pop(profile, None)
+    dataset_counts_cache_stats["entries"] = len(dataset_counts_cache)
+
+def dataset_cache_stats_snapshot() -> dict[str, Any]:
+    dataset_counts_cache_stats["entries"] = len(dataset_counts_cache)
+    requests = dataset_counts_cache_stats["hits"] + dataset_counts_cache_stats["misses"]
+    return {
+        **dataset_counts_cache_stats,
+        "hitRate": dataset_counts_cache_stats["hits"] / requests if requests else 0.0,
+    }
+
+
+def image_dimensions_cache_stats_snapshot() -> dict[str, Any]:
+    image_dims_cache_stats["entries"] = len(image_dims_cache)
+    requests = image_dims_cache_stats["hits"] + image_dims_cache_stats["misses"]
+    return {
+        **image_dims_cache_stats,
+        "hitRate": image_dims_cache_stats["hits"] / requests if requests else 0.0,
+    }
 
 
 def safe_filename(name: str) -> str:
@@ -151,16 +214,22 @@ def image_dimensions(image_path: Path) -> tuple[int, int]:
         return 0, 0
     key = (str(image_path.resolve()), mtime)
     dims = image_dims_cache.get(key)
+    if dims is not None:
+        image_dims_cache_stats["hits"] += 1
+        image_dims_cache_stats["entries"] = len(image_dims_cache)
     if dims is None:
+        image_dims_cache_stats["misses"] += 1
         try:
             image = cv2.imread(str(image_path))
             height, width = image.shape[:2] if image is not None else (0, 0)
             dims = (int(width), int(height))
         except Exception:
             dims = (0, 0)
-        if len(image_dims_cache) > 4000:
+        if len(image_dims_cache) >= 4000:
             image_dims_cache.clear()
+            image_dims_cache_stats["evictions"] += 1
         image_dims_cache[key] = dims
+        image_dims_cache_stats["entries"] = len(image_dims_cache)
     return dims
 
 
@@ -184,6 +253,124 @@ def validate_yolo_label_file(label_path: Path, profile: str) -> None:
             raise HTTPException(status_code=400, detail=f"标签坐标越界: {label_path.name}:{line_no}")
 
 
+def _thumbnail_cache_snapshot() -> dict[str, Any]:
+    entries = 0
+    total_bytes = 0
+    try:
+        for path in THUMBNAILS_DIR.glob("*.jpg"):
+            if path.is_file():
+                entries += 1
+                try:
+                    total_bytes += path.stat().st_size
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    thumbnail_cache_stats["entries"] = entries
+    thumbnail_cache_stats["bytes"] = total_bytes
+    requests = thumbnail_cache_stats["hits"] + thumbnail_cache_stats["misses"]
+    thumbnail_cache_stats["hitRate"] = thumbnail_cache_stats["hits"] / requests if requests else 0.0
+    return dict(thumbnail_cache_stats)
+
+
+def prune_thumbnail_cache(force: bool = False) -> dict[str, Any]:
+    """按 TTL、最大文件数和总字节数清理缩略图缓存。"""
+    now = time.time()
+    with thumbnail_cache_lock:
+        last_pruned = float(thumbnail_cache_stats.get("lastPrunedAt", 0))
+        if not force and now - last_pruned < THUMBNAIL_CACHE_PRUNE_INTERVAL_SECONDS:
+            return _thumbnail_cache_snapshot()
+        thumbnail_cache_stats["lastPrunedAt"] = now
+        try:
+            files = [item for item in THUMBNAILS_DIR.iterdir() if item.is_file()]
+        except OSError:
+            return _thumbnail_cache_snapshot()
+        cutoff = now - max(0.0, THUMBNAIL_CACHE_TTL_SECONDS)
+        jpg_files: list[tuple[Path, float, int]] = []
+        for path in files:
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            # 并发生成留下的临时文件不应无限积累。
+            if path.name.startswith(".") and path.suffix == ".tmp":
+                if stat.st_mtime <= cutoff:
+                    try:
+                        path.unlink()
+                    except OSError:
+                        pass
+                continue
+            if path.suffix.lower() != ".jpg":
+                continue
+            if stat.st_mtime <= cutoff:
+                try:
+                    path.unlink()
+                    thumbnail_cache_stats["expirations"] += 1
+                except OSError:
+                    pass
+                continue
+            jpg_files.append((path, stat.st_mtime, stat.st_size))
+
+        jpg_files.sort(key=lambda item: item[1])
+        total_bytes = sum(item[2] for item in jpg_files)
+        while len(jpg_files) > THUMBNAIL_CACHE_MAX_ENTRIES or total_bytes > THUMBNAIL_CACHE_MAX_BYTES:
+            path, _, size = jpg_files.pop(0)
+            try:
+                path.unlink()
+                total_bytes -= size
+                thumbnail_cache_stats["evictions"] += 1
+            except OSError:
+                pass
+        return _thumbnail_cache_snapshot()
+
+
+def thumbnail_cache_stats_snapshot() -> dict[str, Any]:
+    with thumbnail_cache_lock:
+        return _thumbnail_cache_snapshot()
+
+
+def thumbnail_cache_path(image_path: Path, width: int = 192) -> Path:
+    """根据源文件路径、修改时间和大小生成稳定缩略图缓存路径。"""
+    stat = image_path.stat()
+    cache_key = hashlib.sha256(
+        f"{image_path.resolve()}:{stat.st_mtime_ns}:{stat.st_size}:{width}".encode("utf-8")
+    ).hexdigest()
+    return THUMBNAILS_DIR / f"{cache_key}.jpg"
+
+
+def ensure_thumbnail(image_path: Path, width: int = 192) -> Path:
+    """生成固定最大宽度的 JPEG 缩略图，并以原子方式写入缓存。"""
+    with thumbnail_cache_lock:
+        prune_thumbnail_cache(force=False)
+        target = thumbnail_cache_path(image_path, width)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.exists() and target.is_file():
+            target.touch()
+            thumbnail_cache_stats["hits"] += 1
+            return target
+        thumbnail_cache_stats["misses"] += 1
+        image = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
+        if image is None:
+            raise HTTPException(status_code=422, detail="图片无法读取，不能生成缩略图")
+        height, source_width = image.shape[:2]
+        if source_width > width:
+            target_height = max(1, round(height * width / source_width))
+            image = cv2.resize(image, (width, target_height), interpolation=cv2.INTER_AREA)
+        temp = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            encoded_ok, encoded = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 82])
+            if not encoded_ok:
+                raise HTTPException(status_code=500, detail="缩略图编码失败")
+            temp.write_bytes(encoded.tobytes())
+            os.replace(temp, target)
+        finally:
+            try:
+                temp.unlink(missing_ok=True)
+            except OSError:
+                pass
+        prune_thumbnail_cache(force=True)
+        return target
+
 def image_record(image_path: Path, profile: str, split: str) -> dict[str, Any]:
     _, labels_dir = split_paths(profile, split)
     label_path = labels_dir / f"{image_path.stem}.txt"
@@ -195,6 +382,7 @@ def image_record(image_path: Path, profile: str, split: str) -> dict[str, Any]:
         "profile": profile,
         "split": split,
         "url": f"/files/{rel}",
+        "thumbnailUrl": f"/thumbnails/{profile}/{split}/{image_path.name}",
         "width": width,
         "height": height,
         "hasLabel": label_path.exists(),

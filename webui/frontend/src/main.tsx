@@ -33,14 +33,17 @@ import type {
   ClassItem,
   DatasetImage,
   DatasetImagePage,
+  DatasetCheckReport,
   ImportedModelInfo,
   HistoryLog,
   LogPayload,
   MenuKey,
   PredictionItem,
+  PredictionStats,
   PredictionTask,
   ProfileClassInput,
   ProfileInfo,
+  ResourceSnapshot,
   Split,
   Status,
   Task,
@@ -53,26 +56,29 @@ import {
   formatBytes,
   formatTime,
   menuFromLocation,
-  modelSourceName,
-  predictionStatusName,
   predictionTaskMessage,
   shortPath,
   splitName,
   taskName,
   taskState,
 } from './utils';
-import { AnnotationCanvas } from './components/AnnotationCanvas';
+import { AnnotationWorkspace } from './components/AnnotationWorkspace';
 import { AppErrorBoundary } from './components/AppErrorBoundary';
 import { Pagination } from './components/Pagination';
 import { StatCard } from './components/StatCard';
+import { PredictionPanel } from './components/PredictionPanel';
+import { useTaskPolling } from './hooks/useTaskPolling';
+import { TtlLruCache } from './utils/ttlCache';
 
 function App() {
   const [menu, setMenu] = useState<MenuKey>(() => menuFromLocation());
   const [status, setStatus] = useState<Status | null>(null);
+  const [datasetReport, setDatasetReport] = useState<DatasetCheckReport | null>(null);
   const [liveTask, setLiveTask] = useState<Task | null>(null);
   const [log, setLog] = useState<LogPayload | null>(null);
   const [taskHistory, setTaskHistory] = useState<Task[]>([]);
   const [predictions, setPredictions] = useState<PredictionItem[]>([]);
+  const [predictionStats, setPredictionStats] = useState<PredictionStats | null>(null);
   const [predictionTasks, setPredictionTasks] = useState<PredictionTask[]>([]);
   const [historyLog, setHistoryLog] = useState<HistoryLog | null>(null);
   const [busy, setBusy] = useState(false);
@@ -93,24 +99,48 @@ function App() {
   const [annotationTotal, setAnnotationTotal] = useState(0);
   const [annotationPageCount, setAnnotationPageCount] = useState(0);
   const [annotationLabelFilter, setAnnotationLabelFilter] = useState<'all' | 'labeled' | 'unlabeled'>('all');
-  const annotationCache = useRef<{ profile: string; split: Split; label: 'all' | 'labeled' | 'unlabeled'; pages: Map<number, DatasetImage[]> }>({
-    profile: '',
-    split: 'train',
-    label: 'all',
-    pages: new Map(),
-  });
+  const managedImagesCache = useRef(new TtlLruCache<string, DatasetImagePage>({ ttlMs: 30_000, maxEntries: 24 }));
+  const annotationCache = useRef(new TtlLruCache<string, AnnotationImagePage>({ ttlMs: 30_000, maxEntries: 24 }));
+  const predictionResultsCache = useRef(new TtlLruCache<string, { predictions: PredictionItem[]; stats: PredictionStats }>({ ttlMs: 10_000, maxEntries: 12 }));
+  const [cacheStatsVersion, setCacheStatsVersion] = useState(0);
+  const managedImagesRequestId = useRef(0);
+  const annotationImagesRequestId = useRef(0);
   const [selectedImage, setSelectedImage] = useState<DatasetImage | null>(null);
   const [annotationBoxes, setAnnotationBoxes] = useState<Box[]>([]);
+  const annotationBoxesRef = useRef<Box[]>([]);
+  const annotationGestureStart = useRef<Box[] | null>(null);
+  const annotationGestureDirty = useRef(false);
+  const annotationHistory = useRef<{ past: Box[][]; future: Box[][] }>({ past: [], future: [] });
+  const [annotationHistoryVersion, setAnnotationHistoryVersion] = useState(0);
+  const [annotationDirty, setAnnotationDirty] = useState(false);
   const [annotationClasses, setAnnotationClasses] = useState<ClassItem[]>([]);
   const [selectedClassId, setSelectedClassId] = useState(0);
   const [selectedBoxIndex, setSelectedBoxIndex] = useState<number | null>(null);
   const [datasetMessage, setDatasetMessage] = useState('');
   const [photoMessage, setPhotoMessage] = useState('');
   const [annotationMessage, setAnnotationMessage] = useState('');
+  const [savingAnnotation, setSavingAnnotation] = useState(false);
+  const [annotationImagesLoading, setAnnotationImagesLoading] = useState(false);
+  const [annotationImagesError, setAnnotationImagesError] = useState('');
+  const [annotationStatusLoading, setAnnotationStatusLoading] = useState(false);
+  const [annotationStatusError, setAnnotationStatusError] = useState('');
   const [saveDialog, setSaveDialog] = useState<{ kind: 'success' | 'error'; message: string } | null>(null);
   const [predictionMessage, setPredictionMessage] = useState('');
+  const [predictionResultsLoading, setPredictionResultsLoading] = useState(false);
+  const [predictionResultsError, setPredictionResultsError] = useState('');
+  const [predictionTasksLoading, setPredictionTasksLoading] = useState(false);
+  const [predictionTasksError, setPredictionTasksError] = useState('');
+  const [predictionActionError, setPredictionActionError] = useState('');
+  const [storageStats, setStorageStats] = useState<{
+    predictions: { entries: number; bytes: number; quotaBytes: number; quotaEntries: number; protectedEntries: number; failed: number; overQuota: boolean };
+    uploads: { entries: number; bytes: number; quotaBytes: number; quotaEntries: number; protectedEntries: number; failed: number; overQuota: boolean };
+  } | null>(null);
+  const [storageStatsLoading, setStorageStatsLoading] = useState(false);
   const [confidence, setConfidence] = useState('0.25');
   const [predictionLimit, setPredictionLimit] = useState('48');
+  const [predictionFilterProfile, setPredictionFilterProfile] = useState('');
+  const [predictionFilterModel, setPredictionFilterModel] = useState('');
+  const [predictionMinConf, setPredictionMinConf] = useState('');
   const [selectedPredictionPaths, setSelectedPredictionPaths] = useState<string[]>([]);
   const [importedModels, setImportedModels] = useState<ImportedModelInfo[]>([]);
   const [selectedModel, setSelectedModel] = useState('');
@@ -129,6 +159,17 @@ function App() {
   const [previewPredictionUrl, setPreviewPredictionUrl] = useState<string | null>(null);
   const [localFileUrl, setLocalFileUrl] = useState<string | null>(null);
   const [logAuto, setLogAuto] = useState(true);
+  const [trainEpochs, setTrainEpochs] = useState('100');
+  const [trainImageSize, setTrainImageSize] = useState('640');
+  const [trainBatch, setTrainBatch] = useState('8');
+  const [trainDevice, setTrainDevice] = useState<'auto' | 'cpu' | 'cuda'>('auto');
+  const [trainWorkers, setTrainWorkers] = useState('0');
+  const [trainModel, setTrainModel] = useState('');
+  const [resourceSnapshot, setResourceSnapshot] = useState<ResourceSnapshot | null>(null);
+  const predictionResultsAbort = useRef<AbortController | null>(null);
+  const predictionTasksAbort = useRef<AbortController | null>(null);
+  const statusAbort = useRef<AbortController | null>(null);
+  const annotationImagesAbort = useRef<AbortController | null>(null);
 
   const task = liveTask ?? status?.task ?? null;
   const dataset = status?.dataset;
@@ -136,6 +177,38 @@ function App() {
   const profileOptions = status?.profiles || [];
   const currentProfile = profileOptions.find((item) => item.id === datasetProfile) || profileOptions[0];
   const currentClasses = status?.classes || [];
+
+  function imagePageCacheKey(profile: string, split: Split, label: 'all' | 'labeled' | 'unlabeled', page: number) {
+    return `${profile}|${split}|${label}|${page}`;
+  }
+
+  function predictionCacheKey(query: string) {
+    return query;
+  }
+
+  function invalidateImageCaches(profile?: string, split?: Split) {
+    const prefix = profile && split ? `${profile}|${split}|` : profile ? `${profile}|` : null;
+    for (const cache of [managedImagesCache.current, annotationCache.current]) {
+      if (!prefix) {
+        cache.clear();
+        continue;
+      }
+      for (const key of cache.keys()) if (key.startsWith(prefix)) cache.delete(key);
+    }
+    refreshCacheStats();
+  }
+
+  function refreshCacheStats() {
+    managedImagesCache.current.prune();
+    annotationCache.current.prune();
+    predictionResultsCache.current.prune();
+    setCacheStatsVersion((value) => value + 1);
+  }
+
+  useEffect(() => {
+    const timer = window.setInterval(refreshCacheStats, 5000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     const onPopState = () => setMenu(menuFromLocation());
@@ -150,29 +223,24 @@ function App() {
     }
   }, [status, datasetProfile]);
 
+  useTaskPolling({
+    resetKey: datasetProfile,
+    logAuto,
+    refreshAll,
+    refreshTask,
+    refreshLog,
+    refreshTaskHistory,
+    refreshPredictionTasks,
+    refreshStatus,
+  });
+
   useEffect(() => {
-    void refreshAll();
-    const refreshingRef: { current: boolean } = { current: false };
-    const fastTimer = window.setInterval(() => {
-      if (refreshingRef.current) return;
-      refreshingRef.current = true;
-      Promise.allSettled([
-        refreshTask(),
-        logAuto ? refreshLog() : Promise.resolve(),
-        refreshTaskHistory(),
-        refreshPredictionTasks(),
-      ]).finally(() => {
-        refreshingRef.current = false;
-      });
-    }, 2200);
-    const slowTimer = window.setInterval(() => {
-      void refreshStatus();
-    }, 15000);
-    return () => {
-      window.clearInterval(fastTimer);
-      window.clearInterval(slowTimer);
-    };
-  }, [datasetProfile, logAuto]);
+    invalidateImageCaches();
+  }, [datasetProfile]);
+
+  useEffect(() => {
+    invalidateImageCaches();
+  }, [annotateProfile, annotateSplit, annotationLabelFilter]);
 
   useEffect(() => {
     setPhotoPage(1);
@@ -192,9 +260,32 @@ function App() {
   }, [annotateProfile, annotationLabelFilter, annotationPage, annotateSplit, menu]);
 
   useEffect(() => {
+    void refreshDatasetReport();
+  }, [datasetProfile]);
+
+  useEffect(() => {
+    if (menu === 'overview') void refreshStorageStats();
+  }, [menu]);
+
+  useEffect(() => {
+    if (menu === 'training') void refreshTrainingResources();
     if (menu === 'profiles') void loadProfiles();
     if (menu === 'prediction') void loadImportedModels();
   }, [menu]);
+
+  useEffect(() => {
+    if (menu === 'training') void refreshTrainingResources();
+  }, [menu, trainDevice]);
+
+  useEffect(() => {
+    if (menu !== 'prediction') return;
+    void refreshPredictions().catch((error) => {
+      if (!(error instanceof DOMException && error.name === 'AbortError')) {
+        setPredictionMessage(error instanceof Error ? error.message : '读取预测结果失败');
+      }
+    });
+    return () => predictionResultsAbort.current?.abort();
+  }, [menu, predictionLimit, predictionFilterProfile, predictionFilterModel, predictionMinConf]);
 
   useEffect(() => {
     if (menu !== 'annotate') setAnnotateProfile(datasetProfile);
@@ -214,13 +305,93 @@ function App() {
     return () => window.clearTimeout(timer);
   }, [saveDialog]);
 
+  function resetAnnotationHistory(boxes: Box[]) {
+    annotationBoxesRef.current = boxes;
+    annotationGestureStart.current = null;
+    annotationGestureDirty.current = false;
+    annotationHistory.current = { past: [boxes], future: [] };
+    setAnnotationHistoryVersion((value) => value + 1);
+  }
+
+  function changeAnnotationBoxes(next: Box[]) {
+    const current = annotationBoxesRef.current;
+    if (JSON.stringify(current) === JSON.stringify(next)) return;
+    const history = annotationHistory.current;
+    history.past = [...history.past, next].slice(-21);
+    history.future = [];
+    annotationBoxesRef.current = next;
+    setAnnotationBoxes(next);
+    setAnnotationDirty(true);
+    setAnnotationHistoryVersion((value) => value + 1);
+  }
+
+  function beginAnnotationGesture() {
+    annotationGestureStart.current = annotationBoxesRef.current;
+    annotationGestureDirty.current = annotationDirty;
+  }
+
+  function previewAnnotationBoxes(next: Box[]) {
+    if (JSON.stringify(annotationBoxesRef.current) === JSON.stringify(next)) return;
+    annotationBoxesRef.current = next;
+    setAnnotationBoxes(next);
+    setAnnotationDirty(true);
+  }
+
+  function commitAnnotationGesture(next: Box[]) {
+    const baseline = annotationGestureStart.current ?? annotationBoxesRef.current;
+    annotationGestureStart.current = null;
+    annotationGestureDirty.current = false;
+    if (JSON.stringify(baseline) === JSON.stringify(next)) return;
+    const history = annotationHistory.current;
+    history.past = [...history.past, next].slice(-21);
+    history.future = [];
+    annotationBoxesRef.current = next;
+    setAnnotationBoxes(next);
+    setAnnotationDirty(true);
+    setAnnotationHistoryVersion((value) => value + 1);
+  }
+
+  function cancelAnnotationGesture() {
+    const baseline = annotationGestureStart.current;
+    const wasDirty = annotationGestureDirty.current;
+    annotationGestureStart.current = null;
+    annotationGestureDirty.current = false;
+    if (!baseline) return;
+    annotationBoxesRef.current = baseline;
+    setAnnotationBoxes(baseline);
+    setAnnotationDirty(wasDirty);
+  }
+
+  function undoAnnotation() {
+    const history = annotationHistory.current;
+    if (history.past.length <= 1) return;
+    const current = history.past.pop() as Box[];
+    history.future = [current, ...history.future].slice(0, 20);
+    const previous = history.past[history.past.length - 1];
+    annotationBoxesRef.current = previous;
+    setAnnotationBoxes(previous);
+    setAnnotationDirty(true);
+    setAnnotationHistoryVersion((value) => value + 1);
+  }
+
+  function redoAnnotation() {
+    const history = annotationHistory.current;
+    const next = history.future.shift();
+    if (!next) return;
+    history.past = [...history.past, next].slice(-21);
+    annotationBoxesRef.current = next;
+    setAnnotationBoxes(next);
+    setAnnotationDirty(true);
+    setAnnotationHistoryVersion((value) => value + 1);
+  }
+
   function nudgeSelectedBox(dxPx: number, dyPx: number, index: number) {
     const img = selectedImage;
     if (!img) return;
     const imageWidth = img.width || 1;
     const imageHeight = img.height || 1;
-    setAnnotationBoxes((current) =>
-      current.map((box, i) => {
+    changeAnnotationBoxes(
+      annotationBoxesRef.current.map((box, i) => {
         if (i !== index) return box;
         const halfWidth = box.width / 2;
         const halfHeight = box.height / 2;
@@ -238,6 +409,19 @@ function App() {
       if (menu !== 'annotate' || !selectedImage) return;
       const target = event.target as HTMLElement | null;
       const tag = target?.tagName;
+
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') {
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+        event.preventDefault();
+        if (event.shiftKey) redoAnnotation(); else undoAnnotation();
+        return;
+      }
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'y') {
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+        event.preventDefault();
+        redoAnnotation();
+        return;
+      }
 
       if (event.key === 'Enter' && !event.repeat) {
         if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || tag === 'BUTTON') return;
@@ -264,11 +448,27 @@ function App() {
   }, [menu, selectedImage, selectedBoxIndex]);
 
   async function refreshStatus(profileOverride?: string) {
-    const next = await api.get<Status>(`/api/status?profile=${profileOverride ?? datasetProfile}`);
-    setStatus(next);
-    setAnnotationClasses(next.classes);
-    if (!next.classes.some((item) => item.id === selectedClassId)) {
-      setSelectedClassId(next.classes[0]?.id ?? 0);
+    statusAbort.current?.abort();
+    const controller = new AbortController();
+    const trackAnnotationStatus = menu === 'annotate';
+    statusAbort.current = controller;
+    if (trackAnnotationStatus) {
+      setAnnotationStatusLoading(true);
+      setAnnotationStatusError('');
+    }
+    try {
+      const next = await api.get<Status>(`/api/status?profile=${profileOverride ?? datasetProfile}`, controller.signal);
+      if (controller.signal.aborted) return;
+      setStatus(next);
+      setAnnotationClasses(next.classes);
+      if (!next.classes.some((item) => item.id === selectedClassId)) {
+        setSelectedClassId(next.classes[0]?.id ?? 0);
+      }
+    } catch (error) {
+      if (controller.signal.aborted || (error instanceof DOMException && error.name === 'AbortError')) return;
+      if (trackAnnotationStatus) setAnnotationStatusError(error instanceof Error ? error.message : '读取数据集状态失败');
+    } finally {
+      if (!controller.signal.aborted && trackAnnotationStatus) setAnnotationStatusLoading(false);
     }
   }
 
@@ -299,11 +499,65 @@ function App() {
     }
   }
 
-  async function refreshPredictions() {
-    const limit = predictionLimit.replace(/\D/g, '') || '48';
-    const response = await api.get<{ predictions: PredictionItem[] }>(`/api/predictions?limit=${limit}`);
-    setPredictions(response.predictions);
+  async function refreshStorageStats(force = false) {
+    if (force) setStorageStatsLoading(true);
+    try {
+      const response = force
+        ? await api.post<{ storage: NonNullable<typeof storageStats> }>('/api/cache/prune')
+        : await api.get<{ storage: NonNullable<typeof storageStats> }>('/api/cache/stats');
+      setStorageStats(response.storage);
+    } catch {
+      // 配额诊断失败不影响预测、上传和标注主流程。
+    } finally {
+      if (force) setStorageStatsLoading(false);
+    }
   }
+
+  async function refreshPredictions(force = false) {
+    predictionResultsAbort.current?.abort();
+    const controller = new AbortController();
+    predictionResultsAbort.current = controller;
+    setPredictionResultsLoading(true);
+    setPredictionResultsError('');
+    const limit = predictionLimit.replace(/\D/g, '') || '48';
+    const query = new URLSearchParams({ limit });
+    if (predictionFilterProfile) query.set('profile', predictionFilterProfile);
+    if (predictionFilterModel) query.set('model', predictionFilterModel);
+    if (predictionMinConf) query.set('min_conf', predictionMinConf);
+    const queryString = query.toString();
+    const cacheKey = predictionCacheKey(queryString);
+    predictionResultsCache.current.prune();
+    if (!force) {
+      const cached = predictionResultsCache.current.get(cacheKey);
+      if (cached) {
+        if (!controller.signal.aborted) {
+          setPredictions(cached.predictions);
+          setPredictionStats(cached.stats);
+          setPredictionResultsLoading(false);
+        }
+        return;
+      }
+    } else {
+      predictionResultsCache.current.delete(cacheKey);
+    }
+    try {
+      const [response, stats] = await Promise.all([
+        api.get<{ predictions: PredictionItem[] }>(`/api/predictions?${queryString}`, controller.signal),
+        api.get<PredictionStats>(`/api/predictions/stats?${queryString}`, controller.signal),
+      ]);
+      if (controller.signal.aborted) return;
+      predictionResultsCache.current.set(cacheKey, { predictions: response.predictions, stats });
+      refreshCacheStats();
+      setPredictions(response.predictions);
+      setPredictionStats(stats);
+    } catch (error) {
+      if (controller.signal.aborted || (error instanceof DOMException && error.name === 'AbortError')) return;
+      setPredictionResultsError(error instanceof Error ? error.message : '读取预测结果失败');
+    } finally {
+      if (!controller.signal.aborted) setPredictionResultsLoading(false);
+    }
+  }
+
   function togglePredictionSelection(path: string) {
     setSelectedPredictionPaths((current) =>
       current.includes(path) ? current.filter((item) => item !== path) : [...current, path]
@@ -328,24 +582,69 @@ function App() {
   async function deleteSelectedPredictions() {
     if (!selectedPredictionPaths.length) return;
     if (!window.confirm(`确定删除选中的 ${selectedPredictionPaths.length} 条预测结果吗？`)) return;
+    setPredictionActionError('');
     try {
       const response = await api.postJson<{ deleted: string[] }>('/api/predictions/delete', {
         paths: selectedPredictionPaths,
       });
       setPredictionMessage(`已删除 ${response.deleted.length} 条预测结果。`);
       setSelectedPredictionPaths([]);
-      await refreshPredictions();
+      await refreshPredictions(true);
     } catch (error) {
-      setPredictionMessage(error instanceof Error ? error.message : '删除预测结果失败');
+      setPredictionActionError(error instanceof Error ? error.message : '删除预测结果失败');
     }
   }
 
   async function refreshPredictionTasks() {
+    predictionTasksAbort.current?.abort();
+    const controller = new AbortController();
+    predictionTasksAbort.current = controller;
+    setPredictionTasksLoading(true);
+    setPredictionTasksError('');
     try {
-      const response = await api.get<{ tasks: PredictionTask[] }>('/api/predictions/tasks');
-      setPredictionTasks(response.tasks);
-    } catch {
-      // 队列状态轮询失败可暂时忽略，下次刷新会重试
+      const response = await api.get<{ tasks: PredictionTask[] }>('/api/predictions/tasks', controller.signal);
+      if (!controller.signal.aborted) setPredictionTasks(response.tasks);
+    } catch (error) {
+      if (controller.signal.aborted || (error instanceof DOMException && error.name === 'AbortError')) return;
+      setPredictionTasksError(error instanceof Error ? error.message : '读取预测任务失败');
+    } finally {
+      if (!controller.signal.aborted) setPredictionTasksLoading(false);
+    }
+  }
+
+  async function cancelPredictionTask(taskId: string) {
+    if (!window.confirm('确定取消这个预测任务吗？正在运行的模型调用会在返回后停止并清理结果。')) return;
+    setPredictionActionError('');
+    try {
+      const task = await api.postJson<PredictionTask>(`/api/predictions/tasks/${taskId}/cancel`, { reason: '用户取消' });
+      setPredictionMessage(predictionTaskMessage(task));
+      await refreshPredictionTasks();
+    } catch (error) {
+      setPredictionActionError(error instanceof Error ? error.message : '取消预测任务失败');
+    }
+  }
+
+  async function retryPredictionTask(taskId: string) {
+    setPredictionActionError('');
+    try {
+      const task = await api.postJson<PredictionTask>(`/api/predictions/tasks/${taskId}/retry`, {});
+      setPredictionMessage('已创建重试任务，正在等待队列...');
+      await refreshPredictionTasks();
+      await pollPredictionTask(task.id);
+    } catch (error) {
+      setPredictionActionError(error instanceof Error ? error.message : '重试预测任务失败');
+    }
+  }
+
+  async function cleanupPredictionTask(taskId: string) {
+    if (!window.confirm('确定清理这个任务生成的所有预测图片吗？任务记录会保留。')) return;
+    setPredictionActionError('');
+    try {
+      const response = await api.postJson<{ deletedTasks: string[]; skipped: Array<{ taskId: string; reason: string }>; notFound: string[] }>('/api/predictions/cleanup', { task_ids: [taskId] });
+      setPredictionMessage(response.deletedTasks.includes(taskId) ? '已清理该任务的预测结果，任务记录仍保留。' : response.skipped[0]?.reason || '没有可清理的结果。');
+      await Promise.all([refreshPredictions(true), refreshPredictionTasks()]);
+    } catch (error) {
+      setPredictionActionError(error instanceof Error ? error.message : '清理预测结果失败');
     }
   }
 
@@ -471,6 +770,13 @@ function App() {
     }
   }
 
+  function changeDatasetProfile(profile: string) {
+    if (profile === datasetProfile) return;
+    if (annotationDirty && !window.confirm('当前标注尚未保存，确定切换数据集配置吗？')) return;
+    setAnnotationDirty(false);
+    setDatasetProfile(profile);
+  }
+
   function navigate(nextMenu: MenuKey) {
     const nextPath = MENU_PATHS[nextMenu];
     if (window.location.pathname !== nextPath) {
@@ -484,69 +790,146 @@ function App() {
       refreshStatus(),
       refreshTask(),
       refreshLog(),
-      refreshPredictions(),
+      refreshPredictions(true),
       refreshTaskHistory(),
       refreshPredictionTasks(),
     ]);
   }
 
-  async function loadManagedImages(split: Split, page: number) {
+  async function loadManagedImages(split: Split, page: number, force = false) {
+    managedImagesCache.current.prune();
+    const requestId = ++managedImagesRequestId.current;
+    const profile = datasetProfile;
+    const label = photoLabelFilter;
+    const key = imagePageCacheKey(profile, split, label, page);
+    if (!force) {
+      const cached = managedImagesCache.current.peek(key);
+      if (cached) {
+        setManagedImages(cached.images);
+        setPhotoTotal(cached.total);
+        setPhotoPage(cached.page);
+        setPhotoPageCount(cached.pageCount);
+        return;
+      }
+    } else {
+      managedImagesCache.current.delete(key);
+    }
+    const query = new URLSearchParams({ profile, split, page: String(page), page_size: '60', label });
     try {
-      const response = await api.get<DatasetImagePage>(
-        `/api/dataset/images?profile=${datasetProfile}&split=${split}&page=${page}&page_size=60&label=${photoLabelFilter}`
-      );
+      const response = await api.get<DatasetImagePage>(`/api/dataset/images?${query.toString()}`);
+      if (requestId !== managedImagesRequestId.current || profile !== datasetProfile) return;
+      managedImagesCache.current.set(key, response);
+      refreshCacheStats();
       setManagedImages(response.images);
       setPhotoTotal(response.total);
       setPhotoPage(response.page);
       setPhotoPageCount(response.pageCount);
     } catch (error) {
+      if (requestId !== managedImagesRequestId.current || profile !== datasetProfile) return;
       setPhotoMessage(error instanceof Error ? error.message : '读取训练图片失败');
     }
   }
 
-  async function loadAnnotationImages(split: Split, page: number, label: 'all' | 'labeled' | 'unlabeled' = 'all', force = false) {
-    const cache = annotationCache.current;
-    if (force || cache.profile !== annotateProfile || cache.split !== split || cache.label !== label) {
-      cache.profile = annotateProfile;
-      cache.split = split;
-      cache.label = label;
-      cache.pages.clear();
+  async function loadAnnotationImages(split: Split, page: number, label: 'all' | 'labeled' | 'unlabeled' = 'all', force = false): Promise<DatasetImage[]> {
+    annotationImagesAbort.current?.abort();
+    const controller = new AbortController();
+    annotationImagesAbort.current = controller;
+    const requestId = ++annotationImagesRequestId.current;
+    const profile = annotateProfile;
+    annotationCache.current.prune();
+    const key = imagePageCacheKey(profile, split, label, page);
+    let response = force ? undefined : annotationCache.current.peek(key);
+    if (!response) {
+      if (force) annotationCache.current.delete(key);
+      setAnnotationImagesLoading(true);
+      setAnnotationImagesError('');
     }
-    const cached = cache.pages.get(page);
     try {
-      let images = cached;
-      if (!images) {
-        const response = await api.get<AnnotationImagePage>(
-          `/api/dataset/images?profile=${annotateProfile}&split=${split}&page=${page}&page_size=60&label=${label}`
-        );
-        images = response.images;
-        cache.pages.set(page, images);
-        setAnnotationClasses(response.classes);
-        if (!response.classes.some((item) => item.id === selectedClassId)) {
-          setSelectedClassId(response.classes[0]?.id ?? 0);
-        }
-        setAnnotationTotal(response.total);
-        setAnnotationPageCount(response.pageCount);
-        setAnnotationPage(response.page);
-        const sameContext = Boolean(
-          selectedImage && selectedImage.profile === annotateProfile && selectedImage.split === split
-        );
-        const match = selectedImage ? images.find((item) => item.name === selectedImage.name) : null;
-        const next = match || (sameContext && selectedImage ? selectedImage : images[0] || null);
-        setSelectedImage(next);
-        setSelectedBoxIndex(null);
-        if (match || !sameContext) setAnnotationBoxes(next?.boxes || []);
+      if (!response) {
+        const query = new URLSearchParams({ profile, split, page: String(page), page_size: '60', label });
+        response = await api.get<AnnotationImagePage>(`/api/dataset/images?${query.toString()}`, controller.signal);
+        if (controller.signal.aborted || requestId !== annotationImagesRequestId.current || profile !== annotateProfile) return [];
+        annotationCache.current.set(key, response);
+        refreshCacheStats();
       }
+      if (requestId !== annotationImagesRequestId.current || profile !== annotateProfile) return [];
+      setAnnotationClasses(response.classes);
+      if (!response.classes.some((item) => item.id === selectedClassId)) setSelectedClassId(response.classes[0]?.id ?? 0);
+      setAnnotationTotal(response.total);
+      setAnnotationPageCount(response.pageCount);
+      setAnnotationPage(response.page);
+      const images = response.images;
+      const sameContext = Boolean(selectedImage && selectedImage.profile === profile && selectedImage.split === split);
+      const match = selectedImage ? images.find((item) => item.name === selectedImage.name) : null;
+      const next = match || (sameContext && selectedImage && images.some((item) => item.name === selectedImage.name) ? selectedImage : images[0] || null);
+      if (!match && (!sameContext || !images.some((item) => item.name === selectedImage?.name))) {
+        setSelectedImage(next);
+        annotationBoxesRef.current = next?.boxes || [];
+        setAnnotationBoxes(next?.boxes || []);
+        resetAnnotationHistory(next?.boxes || []);
+        setAnnotationDirty(false);
+        setSelectedBoxIndex(null);
+      } else if (match && selectedImage?.name !== match.name) {
+        setSelectedImage(match);
+        annotationBoxesRef.current = match.boxes;
+        setAnnotationBoxes(match.boxes);
+        resetAnnotationHistory(match.boxes);
+        setAnnotationDirty(false);
+        setSelectedBoxIndex(null);
+      }
+      setAnnotationPage(page);
       setAnnotationImages(images);
+      return images;
     } catch (error) {
-      setAnnotationMessage(error instanceof Error ? error.message : '读取标注图片失败');
+      if (controller.signal.aborted || requestId !== annotationImagesRequestId.current || profile !== annotateProfile || (error instanceof DOMException && error.name === 'AbortError')) return [];
+      const message = error instanceof Error ? error.message : '读取标注图片失败';
+      setAnnotationImagesError(message);
+      setAnnotationMessage('');
+      return [];
+    } finally {
+      if (requestId === annotationImagesRequestId.current && !response) setAnnotationImagesLoading(false);
+      else if (requestId === annotationImagesRequestId.current) setAnnotationImagesLoading(false);
     }
   }
 
-  async function runTask(endpoint: string) {
+  async function refreshDatasetReport() {
+    if (!datasetProfile) {
+      setDatasetReport(null);
+      return;
+    }
+    try {
+      const response = await api.get<{ report: DatasetCheckReport | null }>(`/api/dataset/check?profile=${encodeURIComponent(datasetProfile)}`);
+      setDatasetReport(response.report);
+    } catch {
+      setDatasetReport(null);
+    }
+  }
+
+  async function runDatasetCheck() {
     setBusy(true);
     try {
-      await api.postJson(endpoint, { profile: datasetProfile });
+      const response = await api.postJson<{ report: DatasetCheckReport }>('/api/tasks/check', { profile: datasetProfile });
+      setDatasetReport(response.report);
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : '数据集检查失败');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function refreshTrainingResources() {
+    try {
+      const response = await api.get<{ resources: ResourceSnapshot }>(`/api/tasks/resources?device=${encodeURIComponent(trainDevice)}`);
+      setResourceSnapshot(response.resources);
+    } catch {
+      setResourceSnapshot(null);
+    }
+  }
+
+  async function runTask(endpoint: string, payload: Record<string, unknown> = {}) {
+    setBusy(true);
+    try {
+      await api.postJson(endpoint, { profile: datasetProfile, ...payload });
       await refreshAll();
     } catch (error) {
       window.alert(error instanceof Error ? error.message : '任务启动失败');
@@ -556,6 +939,7 @@ function App() {
   }
 
   async function stopTask() {
+    if (!window.confirm('确定停止当前训练任务吗？已完成的轮次会保留，但任务将标记为已取消。')) return;
     await api.post('/api/tasks/stop');
     await refreshAll();
   }
@@ -565,8 +949,9 @@ function App() {
     try {
       const response = await api.post<{ savedImages: unknown[]; savedLabels: unknown[] }>('/api/dataset/upload', form);
       setMessage(`导入完成：${response.savedImages.length} 张图片，${response.savedLabels.length} 个标签文件。`);
+      invalidateImageCaches();
       await refreshStatus();
-      await loadManagedImages(photoSplit, photoPage);
+      await loadManagedImages(photoSplit, photoPage, true);
       await loadAnnotationImages(annotateSplit, annotationPage, annotationLabelFilter, true);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : '导入失败');
@@ -579,8 +964,9 @@ function App() {
       await api.remove(`/api/dataset/images/${image.profile}/${image.split}/${encodeURIComponent(image.name)}`);
       setPhotoMessage(`已删除：${image.name}`);
         setSelectedPhotoNames((current) => current.filter((item) => item !== image.name));
+      invalidateImageCaches();
       await refreshStatus();
-      await loadManagedImages(photoSplit, photoPage);
+      await loadManagedImages(photoSplit, photoPage, true);
       await loadAnnotationImages(annotateSplit, annotationPage, annotationLabelFilter, true);
     } catch (error) {
       setPhotoMessage(error instanceof Error ? error.message : '删除失败');
@@ -617,16 +1003,61 @@ function App() {
       });
       setPhotoMessage(`已批量删除 ${response.deleted.length} 张图片。`);
       setSelectedPhotoNames([]);
+      invalidateImageCaches();
       await refreshStatus();
-      await loadManagedImages(photoSplit, photoPage);
+      await loadManagedImages(photoSplit, photoPage, true);
       await loadAnnotationImages(annotateSplit, annotationPage, annotationLabelFilter, true);
     } catch (error) {
       setPhotoMessage(error instanceof Error ? error.message : '批量删除失败');
     }
   }
 
-  async function saveAnnotation() {
+  function handleAnnotationChange(next: Box[]) {
+    changeAnnotationBoxes(next);
+  }
+
+  function selectAnnotationImage(image: DatasetImage, skipConfirm = false): boolean {
+    if (selectedImage?.name === image.name && selectedImage.split === image.split && selectedImage.profile === image.profile) return true;
+    if (!skipConfirm && annotationDirty && !window.confirm('当前标注尚未保存，确定切换图片吗？')) return false;
+    setSelectedImage(image);
+    annotationBoxesRef.current = image.boxes;
+    setAnnotationBoxes(image.boxes);
+    resetAnnotationHistory(image.boxes);
+    setAnnotationDirty(false);
+    setSelectedBoxIndex(null);
+    setAnnotationMessage('');
+    return true;
+  }
+
+  function changeAnnotationPage(page: number) {
+    if (annotationDirty && !window.confirm('当前标注尚未保存，确定切换页面吗？')) return;
+    setAnnotationDirty(false);
+    setAnnotationPage(page);
+  }
+
+  async function goToAdjacentAnnotation(delta: -1 | 1) {
     if (!selectedImage) return;
+    const index = annotationImages.findIndex((item) => item.name === selectedImage.name);
+    if (index < 0) return;
+    const next = annotationImages[index + delta];
+    if (next) {
+      selectAnnotationImage(next);
+      return;
+    }
+    const targetPage = annotationPage + delta;
+    if (targetPage < 1 || targetPage > annotationPageCount) return;
+    if (annotationDirty && !window.confirm('当前标注尚未保存，确定切换图片吗？')) return;
+    setAnnotationDirty(false);
+    const pageImages = await loadAnnotationImages(annotateSplit, targetPage, annotationLabelFilter);
+    const target = delta < 0 ? pageImages[pageImages.length - 1] : pageImages[0];
+    if (target) selectAnnotationImage(target, true);
+  }
+
+  async function saveAnnotation(moveNext = false) {
+    if (!selectedImage || savingAnnotation) return;
+    const currentName = selectedImage.name;
+    setSavingAnnotation(true);
+    const currentIndex = annotationImages.findIndex((item) => item.name === currentName);
     setAnnotationMessage('正在保存标注...');
     try {
       const response = await api.postJson<{ image: DatasetImage }>('/api/dataset/labels', {
@@ -644,6 +1075,8 @@ function App() {
       const updated = response.image;
       setSelectedImage(updated);
       setAnnotationBoxes(updated.boxes);
+      resetAnnotationHistory(updated.boxes);
+      setAnnotationDirty(false);
       const saveMessage = `已保存 ${updated.labelCount} 个标注框。`;
       setAnnotationMessage(saveMessage);
       setSaveDialog({ kind: 'success', message: saveMessage });
@@ -651,32 +1084,40 @@ function App() {
       setSelectedBoxIndex(null);
       await refreshStatus();
       if (annotationLabelFilter === 'unlabeled' && updated.hasLabel) {
-        await loadAnnotationImages(annotateSplit, annotationPage, annotationLabelFilter, true);
+        const refreshed = await loadAnnotationImages(annotateSplit, annotationPage, annotationLabelFilter, true);
+        if (moveNext) {
+          const target = refreshed[currentIndex] || (annotationPage < annotationPageCount
+            ? (await loadAnnotationImages(annotateSplit, annotationPage + 1, annotationLabelFilter))[0]
+            : undefined);
+          if (target) selectAnnotationImage(target, true);
+        }
+      } else if (moveNext) {
+        await goToAdjacentAnnotation(1);
       }
     } catch (error) {
       const saveMessage = error instanceof Error ? error.message : '保存标注失败';
       setAnnotationMessage(saveMessage);
       setSaveDialog({ kind: 'error', message: `保存失败：${saveMessage}` });
+    } finally {
+      setSavingAnnotation(false);
     }
   }
 
   function updateCachedAnnotationImage(updated: DatasetImage) {
-    const cache = annotationCache.current;
-    for (const [page, images] of cache.pages) {
-      const index = images.findIndex(
-        (item) => item.name === updated.name && item.split === updated.split
-      );
-      if (index >= 0) {
-        const next = [...images];
-        next[index] = updated;
-        cache.pages.set(page, next);
-      }
+    const updatePage = <T extends DatasetImagePage | AnnotationImagePage>(page: T): T => ({
+      ...page,
+      images: page.images.map((item) => item.name === updated.name && item.split === updated.split ? updated : item),
+    } as T);
+    for (const key of managedImagesCache.current.keys()) {
+      const page = managedImagesCache.current.peek(key);
+      if (page && page.images.some((item) => item.name === updated.name && item.split === updated.split)) managedImagesCache.current.set(key, updatePage(page));
     }
-    setAnnotationImages((current) =>
-      current.map((item) =>
-        item.name === updated.name && item.split === updated.split ? updated : item
-      )
-    );
+    for (const key of annotationCache.current.keys()) {
+      const page = annotationCache.current.peek(key);
+      if (page && page.images.some((item) => item.name === updated.name && item.split === updated.split)) annotationCache.current.set(key, updatePage(page));
+    }
+    setManagedImages((current) => current.map((item) => item.name === updated.name && item.split === updated.split ? updated : item));
+    setAnnotationImages((current) => current.map((item) => item.name === updated.name && item.split === updated.split ? updated : item));
   }
 
   async function predict(form: FormData) {
@@ -697,7 +1138,7 @@ function App() {
       const task = await api.get<PredictionTask>(`/api/predictions/tasks/${taskId}`);
       setPredictionMessage(predictionTaskMessage(task));
       await refreshPredictionTasks();
-      if (task.status === 'completed' || task.status === 'failed') {
+      if (task.status === 'completed' || task.status === 'failed' || task.status === 'cancelled' || task.status === 'interrupted') {
         setPredicting(false);
         if (task.status === 'completed' && task.predictions) {
           setPredictions(task.predictions);
@@ -710,17 +1151,19 @@ function App() {
   }
 
   async function loadImportedModels() {
+    setPredictionActionError('');
     try {
       const response = await api.get<{ models: ImportedModelInfo[] }>('/api/models/imported');
       setImportedModels(response.models);
     } catch (error) {
-      setPredictionMessage(error instanceof Error ? error.message : '读取导入模型失败');
+      setPredictionActionError(error instanceof Error ? error.message : '读取导入模型失败');
     }
   }
 
   async function handleImportModelChange(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     if (!file) return;
+    setPredictionActionError('');
     setImportingModel(true);
     try {
       const form = new FormData();
@@ -730,7 +1173,7 @@ function App() {
       setSelectedModel('imported:' + response.model.filename);
       setPredictionMessage('已导入模型「' + response.model.name + '」，已选中用于测试。');
     } catch (error) {
-      setPredictionMessage(error instanceof Error ? error.message : '导入模型失败');
+      setPredictionActionError(error instanceof Error ? error.message : '导入模型失败');
     } finally {
       setImportingModel(false);
       event.target.value = '';
@@ -739,13 +1182,14 @@ function App() {
 
   async function removeImportedModel(model: ImportedModelInfo) {
     if (!window.confirm('确定删除导入的模型「' + model.name + '」吗？')) return;
+    setPredictionActionError('');
     try {
       await api.remove('/api/models/imported/' + encodeURIComponent(model.filename));
       if (selectedModel === 'imported:' + model.filename) setSelectedModel('');
       await loadImportedModels();
       setPredictionMessage('已删除导入模型「' + model.name + '」。');
     } catch (error) {
-      setPredictionMessage(error instanceof Error ? error.message : '删除模型失败');
+      setPredictionActionError(error instanceof Error ? error.message : '删除模型失败');
     }
   }
 
@@ -761,6 +1205,15 @@ function App() {
   ];
 
 
+
+  const cacheStats = useMemo(() => {
+    void cacheStatsVersion;
+    return {
+      images: managedImagesCache.current.stats(),
+      annotations: annotationCache.current.stats(),
+      predictions: predictionResultsCache.current.stats(),
+    };
+  }, [cacheStatsVersion]);
 
   const splitRows = (['train', 'val', 'test'] as Split[]).map((key) => {
     const item = dataset?.splits[key];
@@ -840,7 +1293,7 @@ function App() {
         <div className="sidebar-footer">
           <label className="sidebar-profile">
             <span>全局数据集配置</span>
-            <select value={datasetProfile} onChange={(event) => setDatasetProfile(event.target.value)}>
+            <select value={datasetProfile} onChange={(event) => changeDatasetProfile(event.target.value)}>
               {profileOptions.map((profile) => (
                 <option key={profile.id} value={profile.id}>
                   {profile.title}（{profile.id}）
@@ -927,6 +1380,53 @@ function App() {
               </div>
             </section>
 
+            <section className="panel cache-diagnostics">
+              <div className="panel-head">
+                <div>
+                  <h2>缓存诊断</h2>
+                  <p className="annotation-help">页面缓存采用 TTL + LRU，切换数据集或筛选条件后会自动隔离并清理。</p>
+                </div>
+                <button type="button" className="btn" onClick={refreshCacheStats}>刷新统计</button>
+              </div>
+              <div className="kv-grid">
+                {([
+                  ['图片列表', cacheStats.images],
+                  ['标注列表', cacheStats.annotations],
+                  ['预测结果', cacheStats.predictions],
+                ] as const).map(([label, item]) => (
+                  <div key={label}>
+                    <span>{label}</span>
+                    <strong>{item.entries} 项 / 命中率 {(item.hitRate * 100).toFixed(1)}%</strong>
+                    <small>命中 {item.hits} · 未命中 {item.misses} · 淘汰 {item.evictions} · 过期 {item.expirations}</small>
+                  </div>
+                ))}
+              </div>
+            </section>
+
+            <section className="panel storage-diagnostics">
+              <div className="panel-head">
+                <div>
+                  <h2>磁盘配额</h2>
+                  <p className="annotation-help">预测结果与上传暂存目录会按保留时间和容量自动清理，活动任务文件不会被清理。</p>
+                </div>
+                <button type="button" className="btn" disabled={storageStatsLoading} onClick={() => void refreshStorageStats(true)}>{storageStatsLoading ? '清理中...' : '立即清理'}</button>
+              </div>
+              {storageStats ? (
+                <div className="kv-grid">
+                  {(['predictions', 'uploads'] as const).map((key) => {
+                    const item = storageStats[key];
+                    return (
+                      <div key={key}>
+                        <span>{key === 'predictions' ? '预测结果' : '上传暂存'}</span>
+                        <strong>{formatBytes(item.bytes)} / {formatBytes(item.quotaBytes)} · {item.entries}/{item.quotaEntries} 项</strong>
+                        <small>{item.overQuota ? '超过配额，等待清理' : '配额正常'} · 已保护 {item.protectedEntries} 项 · 清理失败 {item.failed} 次</small>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : <p className="help">磁盘配额统计加载中...</p>}
+            </section>
+
             <section className="panel">
               <div className="panel-head">
                 <h2>运行环境</h2>
@@ -965,6 +1465,26 @@ function App() {
                 <h2>数据集状态</h2>
                 <span className="pill">{dataset?.ready ? '可开始训练' : '尚未满足训练条件'}</span>
               </div>
+              {datasetReport ? (
+                <>
+                  <div className={`check-summary ${datasetReport.ready ? 'success' : 'danger'}`}>
+                    <strong>{datasetReport.ready ? '检查通过，可以开始训练' : `检查未通过：${datasetReport.blockingCount} 个阻断问题`}</strong>
+                    <span>警告 {datasetReport.warningCount} 个，类别分布：{Object.entries(datasetReport.classDistribution).map(([id, count]) => `${id}: ${count}`).join('，') || '暂无'}</span>
+                  </div>
+                  {datasetReport.issues.length ? (
+                    <details className="check-details">
+                      <summary>查看问题详情（显示前 {Math.min(datasetReport.issues.length, 50)} 条）</summary>
+                      <ul>
+                        {datasetReport.issues.slice(0, 50).map((issue, index) => (
+                          <li key={`${issue.code}-${issue.filename}-${issue.line}-${index}`} className={issue.severity === 'blocking' ? 'danger' : ''}>
+                            <strong>{issue.severity === 'blocking' ? '阻断' : '警告'}</strong> {issue.split || ''}{issue.filename ? ` / ${issue.filename}` : ''}{issue.line ? `:${issue.line}` : ''}：{issue.message}
+                          </li>
+                        ))}
+                      </ul>
+                    </details>
+                  ) : null}
+                </>
+              ) : null}
               <table className="table">
                 <thead>
                   <tr>
@@ -1052,7 +1572,7 @@ function App() {
             <section className="panel">
               <div className="panel-head">
                 <h2>数据集检查</h2>
-                <button type="button" className="btn" disabled={busy} onClick={() => void runTask('/api/tasks/check')}>
+                <button type="button" className="btn" disabled={busy} onClick={() => void runDatasetCheck()}>
                   <ListChecks size={16} />
                   检查数据集
                 </button>
@@ -1095,7 +1615,7 @@ function App() {
                       <option value="unlabeled">未标注</option>
                       <option value="labeled">已标注</option>
                     </select>
-                  <button type="button" className="btn" onClick={() => void loadManagedImages(photoSplit, photoPage)}>
+                  <button type="button" className="btn" onClick={() => void loadManagedImages(photoSplit, photoPage, true)}>
                     <RefreshCw size={16} />
                     刷新列表
                   </button>
@@ -1168,7 +1688,7 @@ function App() {
                           />
                           <span>选择</span>
                         </label>
-                      <img src={image.url} alt={image.name} />
+                      <img src={image.thumbnailUrl || image.url} alt={image.name} loading="lazy" />
                       <div className="photo-card-body">
                         <strong>{image.name}</strong>
                         <span>{image.hasLabel ? `已标注 ${image.labelCount} 个框` : '未标注'}</span>
@@ -1177,9 +1697,8 @@ function App() {
                             type="button"
                             className="btn"
                             onClick={() => {
+                              if (!selectAnnotationImage(image)) return;
                               setAnnotateSplit(image.split);
-                              setSelectedImage(image);
-                              setAnnotationBoxes(image.boxes);
                               setAnnotateProfile(image.profile);
                               navigate('annotate');
                             }}
@@ -1205,157 +1724,74 @@ function App() {
         ) : null}
 
         {menu === 'annotate' ? (
-          <section className="annotation-layout">
-            <aside className="annotation-sidebar panel">
-              <div className="panel-head">
-                <h2>待标注图片</h2>
-                <span className="pill">{annotationTotal} 张</span>
-              </div>
-              <select value={annotateSplit} onChange={(event) => { setAnnotationPage(1); setAnnotateSplit(event.target.value as Split); }}>
-                <option value="train">训练集 train</option>
-                <option value="val">验证集 val</option>
-                <option value="test">测试集 test</option>
-              </select>
-              <select value={annotateProfile} onChange={(event) => { setAnnotationPage(1); setAnnotateProfile(event.target.value); }}>
-                {profileOptions.map((profile) => (
-                  <option key={profile.id} value={profile.id}>
-                    {profile.title}（{profile.id}）
-                  </option>
-                ))}
-              </select>
-              <select
-                value={annotationLabelFilter}
-                onChange={(event) => {
-                  setAnnotationPage(1);
-                  setAnnotationLabelFilter(event.target.value as 'all' | 'labeled' | 'unlabeled');
-                }}
-              >
-                <option value="all">全部图片</option>
-                <option value="unlabeled">未标注</option>
-                <option value="labeled">已标注</option>
-              </select>
-              <div className="annotation-image-list">
-                {annotationImages.map((image) => (
-                  <button
-                    type="button"
-                    key={`${image.split}-${image.name}`}
-                    className={selectedImage?.name === image.name ? 'annotation-image active' : 'annotation-image'}
-                    onClick={() => {
-                      setSelectedImage(image);
-                      setAnnotationBoxes(image.boxes);
-                      setSelectedBoxIndex(null);
-                      setAnnotationMessage('');
-                    }}
-                  >
-                    <img src={image.url} alt={image.name} />
-                    <span>
-                      <strong>{image.name}</strong>
-                      <small>{image.hasLabel ? `${image.labelCount} 个框` : '未标注'}</small>
-                    </span>
-                  </button>
-                ))}
-              </div>
-              <Pagination page={annotationPage} pageCount={annotationPageCount} onChange={setAnnotationPage} />
-            </aside>
-
-            <section className="annotation-workspace panel">
-              <div className="annotation-toolbar">
-                <div className="annotation-title">
-                  <h2>{selectedImage?.name || '在线标注'}</h2>
-                  {selectedImage ? <span className="pill">{annotationBoxes.length} 个框</span> : null}
-                </div>
-                <div className="annotation-controls">
-                  <label className="class-picker">
-                    <span>当前类别</span>
-                    <select value={selectedClassId} onChange={(event) => setSelectedClassId(Number(event.target.value))}>
-                      {annotationClasses.map((item) => (
-                        <option key={item.id} value={item.id}>
-                          {item.displayName}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <button
-                    type="button"
-                    className="btn"
-                    disabled={!annotationBoxes.length}
-                    onClick={() => {
-                      setAnnotationBoxes((current) => current.slice(0, -1));
-                      setSelectedBoxIndex(null);
-                    }}
-                  >
-                    撤销最后一个框
-                  </button>
-                  <button
-                    type="button"
-                    className="btn danger"
-                    disabled={!annotationBoxes.length}
-                    onClick={() => {
-                      setAnnotationBoxes([]);
-                      setSelectedBoxIndex(null);
-                    }}
-                  >
-                    清空框选
-                  </button>
-                  <button type="button" className="primary" disabled={!selectedImage} onClick={() => void saveAnnotation()}>
-                    <Save size={16} />
-                    保存标注
-                  </button>
-                </div>
-              </div>
-
-              <AnnotationCanvas
-                image={selectedImage}
-                boxes={annotationBoxes}
-                classes={annotationClasses}
-                selectedClassId={selectedClassId}
-                selectedIndex={selectedBoxIndex}
-                onSelectIndex={setSelectedBoxIndex}
-                onChange={setAnnotationBoxes}
-              />
-              <p className="help">{annotationMessage || `当前共 ${annotationBoxes.length} 个标注框。点击已标注框可拖动微调，选中后用方向键微调，Enter 保存。`}</p>
-
-              <div className="box-list">
-                {annotationBoxes.length ? (
-                  annotationBoxes.map((box, index) => (
-                    <div
-                      className={selectedBoxIndex === index ? 'box-row active' : 'box-row'}
-                      key={`${box.x}-${box.y}-${index}`}
-                      role="button"
-                      tabIndex={0}
-                      onClick={() => setSelectedBoxIndex(index)}
-                      onKeyDown={(event) => {
-                        if (event.key === 'Enter' || event.key === ' ') {
-                          event.preventDefault();
-                          setSelectedBoxIndex(index);
-                        }
-                      }}
-                    >
-                      <span>{annotationClasses.find((item) => item.id === box.classId)?.displayName || `类别 ${box.classId}`} #{index + 1}</span>
-                      <span>中心 ({box.x.toFixed(3)}, {box.y.toFixed(3)})</span>
-                      <span>大小 ({box.width.toFixed(3)}, {box.height.toFixed(3)})</span>
-                      <button
-                        type="button"
-                        className="icon-button"
-                        aria-label={`删除标注框 ${index + 1}`}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          setAnnotationBoxes((current) => current.filter((_, i) => i !== index));
-                          setSelectedBoxIndex(null);
-                        }}
-                      >
-                        <Trash2 size={15} />
-                      </button>
-                    </div>
-                  ))
-                ) : (
-                  <div className="empty">还没有框选。请在图片上按住鼠标左键拖动，框住每个目标；点击已标注框可拖动微调。</div>
-                )}
-              </div>
-            </section>
-          </section>
+          <AnnotationWorkspace
+            profileOptions={profileOptions}
+            annotateProfile={annotateProfile}
+            annotateSplit={annotateSplit}
+            annotationLabelFilter={annotationLabelFilter}
+            annotationImages={annotationImages}
+            annotationTotal={annotationTotal}
+            annotationPage={annotationPage}
+            annotationPageCount={annotationPageCount}
+            selectedImage={selectedImage}
+            annotationBoxes={annotationBoxes}
+            annotationClasses={annotationClasses}
+            selectedClassId={selectedClassId}
+            selectedBoxIndex={selectedBoxIndex}
+            annotationMessage={annotationMessage}
+            annotationDirty={annotationDirty}
+            savingAnnotation={savingAnnotation}
+            annotationImagesLoading={annotationImagesLoading}
+            annotationImagesError={annotationImagesError}
+            annotationStatusLoading={annotationStatusLoading}
+            annotationStatusError={annotationStatusError}
+            historyPastLength={annotationHistory.current.past.length}
+            historyFutureLength={annotationHistory.current.future.length}
+            onSplitChange={(split) => {
+              if (annotationDirty && !window.confirm('当前标注尚未保存，确定切换数据集分组吗？')) return;
+              setAnnotationPage(1);
+              setAnnotateSplit(split);
+            }}
+            onProfileChange={(profile) => {
+              if (annotationDirty && !window.confirm('当前标注尚未保存，确定切换数据集配置吗？')) return;
+              setAnnotationPage(1);
+              setAnnotateProfile(profile);
+            }}
+            onLabelFilterChange={(filter) => {
+              if (annotationDirty && !window.confirm('当前标注尚未保存，确定切换筛选条件吗？')) return;
+              setAnnotationPage(1);
+              setAnnotationLabelFilter(filter);
+            }}
+            onSelectImage={(image) => { selectAnnotationImage(image); }}
+            onPageChange={changeAnnotationPage}
+            onPrevious={() => { void goToAdjacentAnnotation(-1); }}
+            onNext={() => { void goToAdjacentAnnotation(1); }}
+            onClassChange={setSelectedClassId}
+            onUndo={undoAnnotation}
+            onRedo={redoAnnotation}
+            onRemoveLastBox={() => {
+              changeAnnotationBoxes(annotationBoxes.slice(0, -1));
+              setSelectedBoxIndex(null);
+            }}
+            onClearBoxes={() => {
+              changeAnnotationBoxes([]);
+              setSelectedBoxIndex(null);
+            }}
+            onSave={() => { void saveAnnotation(); }}
+            onSaveAndNext={() => { void saveAnnotation(true); }}
+            onSelectBox={setSelectedBoxIndex}
+            onDeleteBox={(index) => {
+              changeAnnotationBoxes(annotationBoxes.filter((_, i) => i !== index));
+              setSelectedBoxIndex(null);
+            }}
+            onAnnotationChange={handleAnnotationChange}
+            onPreviewChange={previewAnnotationBoxes}
+            onChangeStart={beginAnnotationGesture}
+            onChangeCancel={cancelAnnotationGesture}
+            onRetryImages={() => { void loadAnnotationImages(annotateSplit, annotationPage, annotationLabelFilter, true); }}
+            onRetryStatus={() => { void refreshStatus(); }}
+          />
         ) : null}
-
         {menu === 'training' ? (
           <section className="page-stack">
             <section className="panel">
@@ -1363,12 +1799,20 @@ function App() {
                 <h2>训练任务</h2>
                 <span className={running ? 'pill live' : 'pill'}>{taskState(task?.status)}</span>
               </div>
+              <div className="training-params">
+                <label><span>训练轮数</span><input type="number" min="1" max="10000" value={trainEpochs} onChange={(event) => setTrainEpochs(event.target.value)} /></label>
+                <label><span>图片尺寸</span><input type="number" min="32" step="32" max="4096" value={trainImageSize} onChange={(event) => setTrainImageSize(event.target.value)} /></label>
+                <label><span>Batch</span><input type="number" min="1" max="512" value={trainBatch} onChange={(event) => setTrainBatch(event.target.value)} /></label>
+                <label><span>设备</span><select value={trainDevice} onChange={(event) => setTrainDevice(event.target.value as 'auto' | 'cpu' | 'cuda')}><option value="auto">自动</option><option value="cpu">CPU</option><option value="cuda" disabled={!status?.cuda}>CUDA{status?.cuda ? '' : '（不可用）'}</option></select></label>
+                <label><span>数据加载 workers</span><input type="number" min="0" max="32" value={trainWorkers} onChange={(event) => setTrainWorkers(event.target.value)} /></label>
+                <label className="training-model-field"><span>基础模型（可选）</span><input value={trainModel} onChange={(event) => setTrainModel(event.target.value)} placeholder="例如 yolo11n.pt" /></label>
+              </div>
               <div className="action-grid">
-                <button type="button" className="primary" disabled={busy || running} onClick={() => void runTask('/api/tasks/train-smoke')}>
+                <button type="button" className="primary" disabled={busy || running} onClick={() => void runTask('/api/tasks/train-smoke', { epochs: 5, imgsz: 416, batch: 4, device: trainDevice, workers: Number(trainWorkers), model: trainModel || null })}>
                   <Play size={16} />
                   CPU 快速试训
                 </button>
-                <button type="button" className="btn" disabled={busy || running} onClick={() => void runTask('/api/tasks/train-full')}>
+                <button type="button" className="btn" disabled={busy || running} onClick={() => void runTask('/api/tasks/train-full', { epochs: Number(trainEpochs), imgsz: Number(trainImageSize), batch: Number(trainBatch), device: trainDevice, workers: Number(trainWorkers), model: trainModel || null })}>
                   <Play size={16} />
                   开始正式训练
                 </button>
@@ -1377,7 +1821,27 @@ function App() {
                   停止当前任务
                 </button>
               </div>
-              <p className="help">快速试训使用较小图片尺寸并只跑 5 轮，适合先验证数据和训练链路。当前机器未检测到 CUDA，因此使用 CPU 训练。</p>
+              <p className="help">训练启动前会自动执行数据集质量检查和资源检查；存在阻断问题时不会启动训练。快速试训固定为 5 轮、416 尺寸、Batch 4。</p>
+              {resourceSnapshot ? (
+                <div className={`resource-summary ${resourceSnapshot.ready ? 'success' : 'danger'}`}>
+                  <strong>{resourceSnapshot.ready ? '资源检查通过' : '资源检查阻断，暂不能启动训练'}</strong>
+                  <span>磁盘可用 {formatBytes(resourceSnapshot.disk.freeBytes)}，内存可用 {formatBytes(resourceSnapshot.memory.availableBytes)}，CPU {resourceSnapshot.cpu.loadPercent.toFixed(0)}%</span>
+                  {resourceSnapshot.gpu?.freeBytes ? <span>GPU 可用显存 {formatBytes(resourceSnapshot.gpu.freeBytes)}</span> : null}
+                  {[...resourceSnapshot.blocking, ...resourceSnapshot.warnings].map((message) => <span key={message}>{message}</span>)}
+                </div>
+              ) : null}
+              {task?.metrics ? (
+                <div className="metrics-panel">
+                  <div className="panel-head"><h3>训练指标</h3><span className="pill">第 {task.metrics.current.epoch} / {typeof task.params?.epochs === 'number' ? task.params.epochs : '?'} 轮</span></div>
+                  <div className="metrics-grid">
+                    <div><span>当前 mAP50-95</span><strong>{task.metrics.current.mAP50_95 == null ? '-' : task.metrics.current.mAP50_95.toFixed(4)}</strong></div>
+                    <div><span>最佳 mAP50-95</span><strong>{task.metrics.best.mAP50_95 == null ? '-' : task.metrics.best.mAP50_95.toFixed(4)}（第 {task.metrics.best.epoch} 轮）</strong></div>
+                    <div><span>Precision</span><strong>{task.metrics.current.precision == null ? '-' : task.metrics.current.precision.toFixed(4)}</strong></div>
+                    <div><span>Recall</span><strong>{task.metrics.current.recall == null ? '-' : task.metrics.current.recall.toFixed(4)}</strong></div>
+                    <div><span>Loss</span><strong>{task.metrics.current.loss.total == null ? '-' : task.metrics.current.loss.total.toFixed(4)}</strong></div>
+                  </div>
+                </div>
+              ) : null}
               <div className="job-info">
                 <div>
                   <span>任务名称</span>
@@ -1391,228 +1855,68 @@ function App() {
                   <span>执行命令</span>
                   <strong>{task?.command.join(' ') || '-'}</strong>
                 </div>
+                <div>
+                  <span>训练参数</span>
+                  <strong>{task?.params ? JSON.stringify(task.params) : '-'}</strong>
+                </div>
+                <div>
+                  <span>结果目录</span>
+                  <strong>{shortPath(task?.resultDir)}</strong>
+                </div>
               </div>
             </section>
           </section>
         ) : null}
 
         {menu === 'prediction' ? (
-          <section className="page-stack">
-            <section className="panel">
-              <div className="panel-head">
-                <h2>预测调试</h2>
-                <span className="pill">{predictions.length} 个输出结果</span>
-              </div>
-              <form
-                className="prediction-form"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  const input = (event.currentTarget.elements.namedItem('file') as HTMLInputElement).files;
-                  if (!input?.length) return;
-                  const form = new FormData();
-                  form.append('file', input[0]);
-                  form.append('conf', confidence);
-                  form.append('profile', datasetProfile);
-                  form.append('model', selectedModel);
-                  void predict(form);
-                  event.currentTarget.reset();
-                  if (localFileUrl) URL.revokeObjectURL(localFileUrl);
-                  setLocalFileUrl(null);
-                }}
-              >
-                <label>
-                  选择测试图片
-                  <input name="file" type="file" accept="image/*" onChange={handlePredictionFileChange} />
-                  {localFileUrl ? (
-                    <img src={localFileUrl} alt="待预测图片预览" className="prediction-upload-preview" />
-                  ) : (
-                    <div className="prediction-upload-placeholder">
-                      <ImagePlus size={28} />
-                      <span>点击选择图片</span>
-                    </div>
-                  )}
-                </label>
-                <div className="model-source-block">
-                  <div className="model-source-row">
-                    <label className="compact-field">
-                      <span>测试模型</span>
-                      <select value={selectedModel} onChange={(event) => setSelectedModel(event.target.value)}>
-                        <option value="">自动（当前配置最佳 / 预训练）</option>
-                        <option value="pretrained">预训练模型 yolo11n.pt</option>
-                        {importedModels.map((model) => (
-                          <option key={model.filename} value={'imported:' + model.filename}>
-                            {'导入：' + model.name}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <label className="btn import-model-btn">
-                      <Upload size={14} />
-                      {importingModel ? '导入中...' : '导入模型'}
-                      <input
-                        type="file"
-                        accept=".pt"
-                        style={{ display: 'none' }}
-                        onChange={(event) => void handleImportModelChange(event)}
-                      />
-                    </label>
-                  </div>
-                  {importedModels.length ? (
-                    <div className="imported-model-list">
-                      {importedModels.map((model) => (
-                        <span key={model.filename} className={'imported-model-chip' + (selectedModel === 'imported:' + model.filename ? ' active' : '')}>
-                          {model.name}（{(model.size / 1024 / 1024).toFixed(1)} MB）
-                          <button
-                            type="button"
-                            className="icon-btn"
-                            title="删除导入的模型"
-                            onClick={() => void removeImportedModel(model)}
-                          >
-                            <X size={13} />
-                          </button>
-                        </span>
-                      ))}
-                    </div>
-                  ) : null}
-                </div>
-                <div className="prediction-controls">
-                  <label>
-                    置信度阈值
-                    <input value={confidence} onChange={(event) => setConfidence(event.target.value)} type="number" min="0.01" max="0.99" step="0.01" />
-                  </label>
-                  <button type="submit" className="primary" disabled={predicting}>
-                    <FileImage size={16} />
-                    {predicting ? '已提交，排队中...' : '开始预测'}
-                  </button>
-                </div>
-              </form>
-              <p className="help">{predictionMessage || '优先使用当前数据集配置对应的 best.pt；如果还没有训练模型，则使用 yolo11n.pt 预训练模型并明确提示。'}</p>
-              <div className="prediction-results">
-                <div className="prediction-results-head">
-                  <div>
-                    <h3>预测结果</h3>
-                    <p className="annotation-help">点击图片可预览，可勾选后批量删除。</p>
-                  </div>
-                  <div className="inline-controls">
-                    <label className="switch">
-                      <input
-                        type="checkbox"
-                        checked={predictions.length > 0 && predictions.every((item) => selectedPredictionPaths.includes(item.path))}
-                        onChange={toggleSelectAllPredictions}
-                      />
-                      全选
-                    </label>
-                    <label className="inline-field">
-                      数量上限
-                      <input
-                        type="number"
-                        min="1"
-                        max="200"
-                        value={predictionLimit}
-                        onChange={(event) => setPredictionLimit(event.target.value)}
-                      />
-                    </label>
-                    <button type="button" className="btn" onClick={() => void refreshPredictions()}>
-                      <RefreshCw size={16} />
-                      刷新结果
-                    </button>
-                    <button
-                      type="button"
-                      className="btn danger"
-                      disabled={!selectedPredictionPaths.length}
-                      onClick={() => void deleteSelectedPredictions()}
-                    >
-                      <Trash2 size={16} />
-                      删除{selectedPredictionPaths.length ? ` (${selectedPredictionPaths.length})` : ''}
-                    </button>
-                  </div>
-                </div>
-                {predictions.length ? (
-                  <div className="prediction-grid">
-                    {predictions.map((item) => (
-                      <article
-                        key={item.path}
-                        className={selectedPredictionPaths.includes(item.path) ? 'prediction-card selected' : 'prediction-card'}
-                      >
-                        <label className="prediction-card-select">
-                          <input
-                            type="checkbox"
-                            checked={selectedPredictionPaths.includes(item.path)}
-                            onChange={() => togglePredictionSelection(item.path)}
-                          />
-                          <span>选择</span>
-                        </label>
-                        <img
-                          src={item.url}
-                          alt={item.name}
-                          onClick={() => setPreviewPredictionUrl(item.url)}
-                        />
-                        <div className="prediction-card-body">
-                          <strong>{item.name}</strong>
-                          <span>{formatTime(item.mtime)}</span>
-                          <button type="button" className="btn" onClick={() => setPreviewPredictionUrl(item.url)}>
-                            预览
-                          </button>
-                        </div>
-                      </article>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="empty">暂时没有预测结果。</div>
-                )}
-              </div>
-            </section>
-
-            <section className="panel">
-              <div className="panel-head">
-                <h2>推理队列</h2>
-                <span className="pill">{predictionTasks.length} 个任务</span>
-                <button type="button" className="btn" onClick={() => void refreshPredictionTasks()}>
-                  <RefreshCw size={16} />
-                  刷新队列
-                </button>
-              </div>
-              {predictionTasks.length ? (
-                <table className="table">
-                  <thead>
-                    <tr>
-                      <th>状态</th>
-                      <th>配置</th>
-                      <th>模型来源</th>
-                      <th>说明</th>
-                      <th>提交时间</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {predictionTasks.map((item) => (
-                      <tr key={item.id}>
-                        <td>
-                          <span
-                            className={`pill ${
-                              item.status === 'running' ? 'live' : item.status === 'failed' ? 'danger' : ''
-                            }`}
-                          >
-                            {predictionStatusName(item.status)}
-                          </span>
-                        </td>
-                        <td>{profileOptions.find((option) => option.id === item.profile)?.title || item.profile}</td>
-                        <td>
-                          {modelSourceName(item.modelSource)}
-                        </td>
-                        <td className="command-cell">{predictionTaskMessage(item)}</td>
-                        <td>{formatTime(item.createdAt)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              ) : (
-                <div className="empty">当前没有推理任务。</div>
-              )}
-            </section>
-
-          </section>
+          <PredictionPanel
+            predictions={predictions}
+            predictionStats={predictionStats}
+            predictionTasks={predictionTasks}
+            predictionMessage={predictionMessage}
+            predictionResultsLoading={predictionResultsLoading}
+            predictionResultsError={predictionResultsError}
+            predictionTasksLoading={predictionTasksLoading}
+            predictionTasksError={predictionTasksError}
+            predictionActionError={predictionActionError}
+            profileOptions={profileOptions}
+            datasetProfile={datasetProfile}
+            importedModels={importedModels}
+            selectedModel={selectedModel}
+            confidence={confidence}
+            predictionLimit={predictionLimit}
+            predictionFilterProfile={predictionFilterProfile}
+            predictionFilterModel={predictionFilterModel}
+            predictionMinConf={predictionMinConf}
+            selectedPredictionPaths={selectedPredictionPaths}
+            localFileUrl={localFileUrl}
+            predicting={predicting}
+            importingModel={importingModel}
+            onPredict={(form) => void predict(form)}
+            onPredictionFileChange={handlePredictionFileChange}
+            onClearLocalFile={() => {
+              if (localFileUrl) URL.revokeObjectURL(localFileUrl);
+              setLocalFileUrl(null);
+            }}
+            onSelectedModelChange={setSelectedModel}
+            onConfidenceChange={setConfidence}
+            onImportModelChange={(event) => void handleImportModelChange(event)}
+            onRemoveImportedModel={(model) => void removeImportedModel(model)}
+            onPredictionFilterProfileChange={setPredictionFilterProfile}
+            onPredictionFilterModelChange={setPredictionFilterModel}
+            onPredictionMinConfChange={setPredictionMinConf}
+            onPredictionLimitChange={setPredictionLimit}
+            onRefreshPredictions={() => void refreshPredictions(true)}
+            onDeleteSelectedPredictions={() => void deleteSelectedPredictions()}
+            onToggleSelectAllPredictions={toggleSelectAllPredictions}
+            onTogglePredictionSelection={togglePredictionSelection}
+            onPreviewPrediction={setPreviewPredictionUrl}
+            onRefreshPredictionTasks={() => void refreshPredictionTasks()}
+            onCancelPredictionTask={(taskId) => void cancelPredictionTask(taskId)}
+            onRetryPredictionTask={(taskId) => void retryPredictionTask(taskId)}
+            onCleanupPredictionTask={(taskId) => void cleanupPredictionTask(taskId)}
+          />
         ) : null}
-
 
         {menu === 'profiles' ? (
           <section className="page-stack">
@@ -1891,6 +2195,7 @@ function App() {
                     <th>开始时间</th>
                     <th>完成时间</th>
                     <th>退出代码</th>
+                    <th>指标</th>
                     <th>执行命令</th>
                     <th>日志</th>
                   </tr>
@@ -1904,6 +2209,7 @@ function App() {
                         <td>{formatTime(item.startedAt)}</td>
                         <td>{formatTime(item.finishedAt)}</td>
                         <td>{item.returncode ?? '-'}</td>
+                        <td>{item.metrics ? `第 ${item.metrics.current.epoch} 轮，mAP ${item.metrics.current.mAP50_95 == null ? '-' : item.metrics.current.mAP50_95.toFixed(3)}` : '-'}</td>
                         <td className="command-cell">{item.command.join(' ')}</td>
                         <td>
                           <button type="button" className="btn" onClick={() => void openHistoryLog(item.id)}>
@@ -1914,7 +2220,7 @@ function App() {
                     ))
                   ) : (
                     <tr>
-                      <td colSpan={7}>暂无历史任务。</td>
+                      <td colSpan={8}>暂无历史任务。</td>
                     </tr>
                   )}
                 </tbody>

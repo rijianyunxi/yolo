@@ -46,8 +46,10 @@ export function taskState(value: string | undefined) {
   const names: Record<string, string> = {
     running: '运行中',
     stopping: '正在停止',
+    cancelled: '已取消',
     success: '已完成',
     failed: '失败',
+    interrupted: '服务中断',
   };
   return value ? names[value] || value : '空闲';
 }
@@ -56,8 +58,11 @@ export function predictionStatusName(status: PredictionTask['status']) {
   const names: Record<PredictionTask['status'], string> = {
     queued: '等待中',
     running: '推理中',
+    stopping: '正在停止',
     completed: '已完成',
     failed: '失败',
+    cancelled: '已取消',
+    interrupted: '服务中断',
   };
   return names[status] || status;
 }
@@ -85,6 +90,9 @@ export function predictionTaskMessage(task: PredictionTask) {
     return labels ? `${task.message || '检测完成'}${source}：${labels}` : `${task.message || '未检测到目标'}${source}。`;
   }
   if (task.status === 'failed') return task.error || task.message || '推理失败';
+  if (task.status === 'cancelled') return task.cancelReason ? `已取消：${task.cancelReason}` : task.message || '预测任务已取消';
+  if (task.status === 'interrupted') return task.message || '服务重启导致任务中断，可尝试重试';
+  if (task.status === 'stopping') return task.message || '正在停止推理...';
   return task.message || predictionStatusName(task.status);
 }
 

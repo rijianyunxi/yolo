@@ -8,6 +8,7 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
 from ..config import DEFAULT_PROFILE, IMAGE_EXTS, VALID_SPLITS
+from ..services.dataset_check import load_dataset_report
 from ..services.datasets import (
     dataset_counts,
     delete_dataset_images,
@@ -15,12 +16,19 @@ from ..services.datasets import (
     invalidate_dataset_counts,
     safe_filename,
     save_upload,
+    save_yolo_labels_atomic,
     split_paths,
     validate_yolo_label_file,
 )
 from ..services.profiles import profile_classes, resolve_profile
 
 router = APIRouter()
+
+
+@router.get("/api/dataset/check")
+def get_dataset_check(profile: str = DEFAULT_PROFILE) -> dict[str, Any]:
+    profile = resolve_profile(profile)
+    return {"report": load_dataset_report(profile)}
 
 
 def _natural_sort_key(name: str) -> list[tuple[int, int | str]]:
@@ -147,7 +155,7 @@ def save_dataset_labels(payload: SaveLabelsRequest) -> dict[str, Any]:
         lines.append(
             f"{box.class_id} {box.x:.6f} {box.y:.6f} {box.width:.6f} {box.height:.6f}"
         )
-    label_path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+    save_yolo_labels_atomic(label_path, lines)
 
     invalidate_dataset_counts(payload.profile)
 

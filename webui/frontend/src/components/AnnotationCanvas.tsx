@@ -9,6 +9,9 @@ export function AnnotationCanvas({
   selectedIndex,
   onSelectIndex,
   onChange,
+  onPreviewChange,
+  onChangeStart,
+  onChangeCancel,
 }: {
   image: DatasetImage | null;
   boxes: Box[];
@@ -17,6 +20,9 @@ export function AnnotationCanvas({
   selectedIndex: number | null;
   onSelectIndex: (index: number | null) => void;
   onChange: (boxes: Box[]) => void;
+  onPreviewChange?: (boxes: Box[]) => void;
+  onChangeStart?: () => void;
+  onChangeCancel?: () => void;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
@@ -132,6 +138,7 @@ export function AnnotationCanvas({
           offsetX: point.x - box.x * canvas.width,
           offsetY: point.y - box.y * canvas.height,
         };
+        onChangeStart?.();
         return;
       }
     }
@@ -161,7 +168,7 @@ export function AnnotationCanvas({
         x: Number(nextX.toFixed(6)),
         y: Number(nextY.toFixed(6)),
       };
-      onChange(next);
+      onPreviewChange?.(next);
       return;
     }
     if (!dragStart.current) return;
@@ -171,7 +178,22 @@ export function AnnotationCanvas({
 
   function finishBox(event: ReactPointerEvent<HTMLCanvasElement>) {
     if (moving.current) {
+      const canvas = event.currentTarget;
+      const point = pointFromEvent(event);
+      const { index, offsetX, offsetY } = moving.current;
+      const box = boxes[index];
       moving.current = null;
+      if (box) {
+        const halfWidth = box.width / 2;
+        const halfHeight = box.height / 2;
+        const next = [...boxes];
+        next[index] = {
+          ...box,
+          x: Number(Math.min(1 - halfWidth, Math.max(halfWidth, (point.x - offsetX) / canvas.width)).toFixed(6)),
+          y: Number(Math.min(1 - halfHeight, Math.max(halfHeight, (point.y - offsetY) / canvas.height)).toFixed(6)),
+        };
+        onChange(next);
+      }
       return;
     }
     const start = dragStart.current;
@@ -222,6 +244,7 @@ export function AnnotationCanvas({
           dragStart.current = null;
           moving.current = null;
           setDraft(null);
+          onChangeCancel?.();
         }}
       />
     </div>

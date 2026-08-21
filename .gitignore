@@ -35,3 +35,12 @@ test_images/
 Thumbs.db
 .idea/
 .vscode/
+
+# 数据集质量检查运行时报告
+webui/reports/
+# 缩略图缓存（运行时生成，可由源图片重新生成）
+webui/thumbnails/
+
+# Playwright / E2E 临时产物
+webui/frontend/.e2e-dist/
+webui/frontend/test-results/

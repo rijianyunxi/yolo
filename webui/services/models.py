@@ -16,12 +16,33 @@ def newest_best_model(profile: str = DEFAULT_PROFILE) -> Path | None:
     return max(candidates, key=lambda path: path.stat().st_mtime)
 
 
+def _cache_prefix(model_path: Path) -> str:
+    return str(model_path.resolve()) + "|"
+
+
+def _cache_key(model_path: Path) -> str:
+    resolved = model_path.resolve()
+    stat = resolved.stat()
+    return f"{resolved}|{stat.st_mtime_ns}|{stat.st_size}"
+
+
+def invalidate_model(model_path: Path) -> None:
+    prefix = _cache_prefix(model_path)
+    with model_cache_lock:
+        for key in list(model_cache):
+            if key.startswith(prefix):
+                model_cache.pop(key, None)
+
+
 def load_model(model_path: Path) -> YOLO:
-    key = str(model_path.resolve())
+    key = _cache_key(model_path)
+    prefix = _cache_prefix(model_path)
     with model_cache_lock:
         model = model_cache.get(key)
         if model is None:
+            for stale_key in list(model_cache):
+                if stale_key.startswith(prefix):
+                    model_cache.pop(stale_key, None)
             model = YOLO(str(model_path))
-            model_cache.clear()
             model_cache[key] = model
         return model
