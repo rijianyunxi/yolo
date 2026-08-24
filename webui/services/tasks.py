@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import signal
@@ -21,6 +22,8 @@ from .training_metrics import parse_training_metrics
 TASK_SCHEMA_VERSION = 2
 _ACTIVE_STATUSES = {"running", "stopping"}
 _TERMINAL_STATUSES = {"success", "failed", "cancelled", "interrupted"}
+
+logger = logging.getLogger("webui")
 
 
 @dataclass
@@ -158,10 +161,18 @@ def run_command(command: list[str], task: ManagedTask) -> None:
     task.log_path = log_path
     process: subprocess.Popen[str] | None = None
     finished = False
+    started_monotonic = time.monotonic()
 
     with log_path.open("w", encoding="utf-8", errors="replace") as log:
         log.write(f"$ {' '.join(command)}\n\n")
         log.flush()
+        logger.info(
+            "训练任务启动 taskId=%s kind=%s profile=%s command=%s",
+            task.id,
+            task.kind,
+            task.profile,
+            " ".join(command),
+        )
         try:
             process = subprocess.Popen(
                 command,
@@ -192,6 +203,14 @@ def run_command(command: list[str], task: ManagedTask) -> None:
             refresh_task_metrics(task)
             mark_finished(task, task.returncode)
             finished = True
+            (logger.info if task.returncode == 0 else logger.warning)(
+                "训练任务结束 taskId=%s kind=%s status=%s returncode=%s durationMs=%s",
+                task.id,
+                task.kind,
+                task.status,
+                task.returncode,
+                max(0, round((time.monotonic() - started_monotonic) * 1000)),
+            )
             log.write(f"\n[exit {task.returncode}]\n")
             if task.metrics:
                 log.write(f"[metrics] epoch={task.metrics['current']['epoch']} mAP50-95={task.metrics['current'].get('mAP50_95')}\n")
@@ -202,6 +221,7 @@ def run_command(command: list[str], task: ManagedTask) -> None:
                 task.message = "训练任务启动或执行异常"
                 mark_finished(task, process.returncode if process is not None else None, error=str(exc))
                 finished = True
+            logger.exception("训练任务执行异常 taskId=%s kind=%s", task.id, task.kind)
             log.write(f"\n[error] {exc}\n")
 
 

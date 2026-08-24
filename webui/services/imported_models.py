@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import uuid
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,8 @@ from fastapi import HTTPException, UploadFile
 
 from ..config import MAX_UPLOAD_BYTES, MODELS_DIR, ROOT
 from .models import invalidate_model, load_model
+
+logger = logging.getLogger("webui")
 
 IMPORTED_MODELS_DIR = MODELS_DIR / "imported"
 MODEL_EXT = ".pt"
@@ -101,11 +104,14 @@ def import_model(file: UploadFile) -> dict[str, Any]:
     _ensure_dir()
     filename = Path(file.filename or "model.pt").name
     if Path(filename).suffix.lower() != MODEL_EXT:
+        logger.warning("模型导入失败 filename=%s error=invalid_model_ext", filename)
         raise HTTPException(status_code=400, detail="仅支持 .pt 模型文件")
     content = file.file.read()
     if len(content) > MAX_UPLOAD_BYTES:
+        logger.warning("模型导入失败 filename=%s error=too_large size=%s", filename, len(content))
         raise HTTPException(status_code=413, detail="模型文件过大")
     if len(content) == 0:
+        logger.warning("模型导入失败 filename=%s error=empty", filename)
         raise HTTPException(status_code=400, detail="模型文件为空")
 
     target = IMPORTED_MODELS_DIR / filename
@@ -117,14 +123,21 @@ def import_model(file: UploadFile) -> dict[str, Any]:
         metadata = _inspect_model(target)
         _write_metadata(target, metadata)
         return imported_model_payload(target)
-    except HTTPException:
+    except HTTPException as exc:
         target.unlink(missing_ok=True)
         _metadata_path(target).unlink(missing_ok=True)
+        logger.warning(
+            "模型导入失败 filename=%s status=%s error=%s",
+            target.name,
+            exc.status_code,
+            exc.detail,
+        )
         raise
     except Exception as exc:
         target.unlink(missing_ok=True)
         _metadata_path(target).unlink(missing_ok=True)
         invalidate_model(target)
+        logger.warning("模型导入失败 filename=%s error=%s", target.name, exc)
         raise HTTPException(status_code=400, detail=f"导入模型失败：{exc}") from exc
 
 

@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import sys
 from pathlib import Path
 from tempfile import TemporaryFile
@@ -335,10 +336,12 @@ def test_training_options_reject_model_outside_project():
     assert "项目目录内" in str(exc.value.detail)
 
 
-def test_import_model_rejects_invalid_checkpoint():
-    with pytest.raises(HTTPException) as exc:
-        import_model(make_upload("broken.pt", b"not a model checkpoint"))
+def test_import_model_rejects_invalid_checkpoint(caplog):
+    with caplog.at_level(logging.WARNING, logger="webui"):
+        with pytest.raises(HTTPException) as exc:
+            import_model(make_upload("broken.pt", b"not a model checkpoint"))
     assert exc.value.status_code == 400
+    assert any("模型导入失败" in record.getMessage() for record in caplog.records)
 
 
 def test_prediction_task_payload_includes_lifecycle_metadata():
@@ -352,6 +355,25 @@ def test_prediction_task_payload_includes_lifecycle_metadata():
     assert payload["cancelReason"] == "用户取消"
     assert payload["originalFilename"] == "猫.jpg"
     assert payload["durationMs"] == 123
+
+
+def test_failed_prediction_logs_structured_error(monkeypatch, tmp_path, caplog):
+    import webui.services.predictions as service
+
+    task = PredictionTask(id="p-log-failed", profile=DEFAULT_PROFILE, upload_path=tmp_path / "input.jpg")
+    def fail_resolution(*args, **kwargs):
+        raise RuntimeError("模型加载失败")
+
+    monkeypatch.setattr(service, "resolve_model_selector", fail_resolution)
+    monkeypatch.setattr(service, "_write_history", lambda records: None)
+    monkeypatch.setattr(service, "maintain_prediction_storage", lambda **kwargs: None)
+    with caplog.at_level(logging.ERROR, logger="webui"):
+        service.run_prediction(task)
+
+    assert task.status == "failed"
+    assert task.error == "模型加载失败"
+    error_records = [record for record in caplog.records if record.levelno == logging.ERROR]
+    assert any("预测任务失败" in record.getMessage() and task.id in record.getMessage() for record in error_records)
 
 
 def test_queued_prediction_can_be_cancelled_without_running(monkeypatch, tmp_path):
@@ -748,7 +770,7 @@ def test_mark_finished_stop_request_wins_over_nonzero_returncode(monkeypatch):
     assert task.error == "进程被终止"
 
 
-def test_run_command_popen_failure_persists_failed_terminal_task(tmp_path, monkeypatch):
+def test_run_command_popen_failure_persists_failed_terminal_task(tmp_path, monkeypatch, caplog):
     import webui.services.tasks as service
 
     log_dir = tmp_path / "task_logs"
@@ -764,9 +786,13 @@ def test_run_command_popen_failure_persists_failed_terminal_task(tmp_path, monke
     monkeypatch.setattr(service.subprocess, "Popen", fail_to_start)
     task = ManagedTask(id="start-failed", kind="full-train:cat", command=["missing-python"])
 
-    run_command(task.command, task)
+    with caplog.at_level(logging.INFO, logger="webui"):
+        run_command(task.command, task)
 
     assert task.status == "failed"
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("训练任务启动" in message and task.id in message for message in messages)
+    assert any("训练任务执行异常" in message and task.id in message for message in messages)
     assert task.returncode is None
     assert task.error == "python executable unavailable"
     assert task.message == "训练任务启动或执行异常"

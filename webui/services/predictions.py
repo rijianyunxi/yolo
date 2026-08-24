@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import queue
 import shutil
 import threading
@@ -29,6 +30,7 @@ from .imported_models import resolve_model_selector
 from .models import load_model
 from .storage import prune_storage, storage_stats, upload_storage_slot
 
+logger = logging.getLogger("webui")
 
 PREDICTION_TERMINAL_STATUSES = {"completed", "failed", "cancelled", "interrupted"}
 PREDICTION_ACTIVE_STATUSES = {"queued", "running", "stopping"}
@@ -669,6 +671,12 @@ def run_prediction(task: PredictionTask) -> None:
             task.error = str(exc)
             task.message = f"推理失败：{exc}"
             task.status = "failed"
+            logger.exception(
+                "预测任务失败 taskId=%s profile=%s error=%s",
+                task.id,
+                task.profile,
+                exc,
+            )
     finally:
         task.finished_at = time.time()
         task.duration_ms = max(0, round((time.monotonic() - started) * 1000))
@@ -718,7 +726,10 @@ def predict_worker() -> None:
                 persist_prediction_task(task)
                 continue
             persist_prediction_task(task)
-            run_prediction(task)
+            try:
+                run_prediction(task)
+            except Exception:
+                logger.exception("预测任务处理异常 taskId=%s", task.id)
         finally:
             predict_queue.task_done()
 
