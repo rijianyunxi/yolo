@@ -1,5 +1,16 @@
 const DEFAULT_TIMEOUT_MS = 60_000;
 
+/** API 非 2xx 响应抛出的错误，附带 HTTP 状态码供上层区分处理（如标注保存 409 冲突）。 */
+export class ApiError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+  }
+}
+
 /** 后端返回的错误字段兼容 detail / code / requestId。 */
 async function readError(response: Response): Promise<string> {
   try {
@@ -59,7 +70,7 @@ async function fetchJson<T>(
     }
     throw err;
   }
-  if (!response.ok) throw new Error(await readError(response));
+  if (!response.ok) throw new ApiError(await readError(response), response.status);
   return response.json() as Promise<T>;
 }
 

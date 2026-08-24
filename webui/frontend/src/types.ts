@@ -158,6 +158,7 @@ export type DatasetImage = {
   labelCount: number;
   boxes: Box[];
   mtime: number;
+  labelMtime?: number | null;
 };
 
 export type DatasetImagePage = {

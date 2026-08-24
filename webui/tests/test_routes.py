@@ -222,3 +222,95 @@ def test_dataset_images_pagination_label_filter_and_missing_file(monkeypatch, tm
     rebuilt = routes.dataset_images(profile="tmp", split="train", page=3, page_size=5, label="all")
     assert rebuilt["total"] == 11
     assert [img["name"] for img in rebuilt["images"]] == ["img_11.jpg"]
+def _save_labels_setup(monkeypatch, tmp_path):
+    import webui.routes.datasets as routes
+    import webui.services.datasets as service
+
+    images_dir = tmp_path / "images" / "train"
+    labels_dir = tmp_path / "labels" / "train"
+    images_dir.mkdir(parents=True)
+    labels_dir.mkdir(parents=True)
+    image = images_dir / "a.jpg"
+    image.write_bytes(b"jpeg-data")
+
+    def fake_split_paths(_profile, _split):
+        return images_dir, labels_dir
+
+    monkeypatch.setattr(routes, "split_paths", fake_split_paths)
+    monkeypatch.setattr(service, "split_paths", fake_split_paths)
+    monkeypatch.setattr(routes, "profile_classes", lambda profile: [{"id": 0, "name": "cat"}])
+    monkeypatch.setattr(routes, "resolve_profile", lambda profile: profile)
+    monkeypatch.setattr(routes, "dataset_counts", lambda profile: {"total": 1})
+    monkeypatch.setattr(service, "ROOT", tmp_path)
+    monkeypatch.setattr(service, "image_dimensions", lambda path: (100, 80))
+    return routes, labels_dir, image
+
+
+def _save_request(routes, boxes=None, expected_label_mtime=None):
+    return routes.SaveLabelsRequest(
+        profile="tmp",
+        split="train",
+        filename="a.jpg",
+        boxes=boxes or [],
+        expected_label_mtime=expected_label_mtime,
+    )
+
+
+ONE_BOX_LABEL = "0 0.1 0.1 0.1 0.1"
+SAVED_LABEL = "0 0.500000 0.500000 0.200000 0.300000"
+
+
+def test_save_labels_creates_label_and_reports_label_mtime(monkeypatch, tmp_path):
+    routes, labels_dir, _image = _save_labels_setup(monkeypatch, tmp_path)
+
+    result = routes.save_dataset_labels(
+        _save_request(
+            routes,
+            boxes=[{"class_id": 0, "x": 0.5, "y": 0.5, "width": 0.2, "height": 0.3}],
+            expected_label_mtime=None,
+        )
+    )
+    label = labels_dir / "a.txt"
+    assert label.exists()
+    assert label.read_text(encoding="utf-8").strip() == SAVED_LABEL
+    img = result["image"]
+    assert img["labelCount"] == 1
+    assert img["labelMtime"] == pytest.approx(label.stat().st_mtime)
+    assert result["dataset"] == {"total": 1}
+
+
+def test_save_labels_conflicts_when_label_file_appeared(monkeypatch, tmp_path):
+    # 客户端加载时无标签文件（expected=None），另一个窗口先写入了标签 → 409
+    routes, labels_dir, _image = _save_labels_setup(monkeypatch, tmp_path)
+    (labels_dir / "a.txt").write_text(ONE_BOX_LABEL, encoding="utf-8")
+
+    with pytest.raises(HTTPException) as exc:
+        routes.save_dataset_labels(_save_request(routes, expected_label_mtime=None))
+    assert exc.value.status_code == 409
+    assert "其他窗口" in exc.value.detail
+
+
+def test_save_labels_conflicts_on_stale_mtime(monkeypatch, tmp_path):
+    # 客户端持过期 mtime，另一个窗口已改写过标签 → 409
+    routes, labels_dir, _image = _save_labels_setup(monkeypatch, tmp_path)
+    label = labels_dir / "a.txt"
+    label.write_text(ONE_BOX_LABEL, encoding="utf-8")
+    stale = label.stat().st_mtime - 1000
+
+    with pytest.raises(HTTPException) as exc:
+        routes.save_dataset_labels(_save_request(routes, expected_label_mtime=stale))
+    assert exc.value.status_code == 409
+
+
+def test_save_labels_succeeds_with_current_mtime(monkeypatch, tmp_path):
+    # 客户端持有当前 mtime，正常覆盖保存
+    routes, labels_dir, _image = _save_labels_setup(monkeypatch, tmp_path)
+    label = labels_dir / "a.txt"
+    label.write_text(ONE_BOX_LABEL, encoding="utf-8")
+    current = label.stat().st_mtime
+
+    result = routes.save_dataset_labels(
+        _save_request(routes, boxes=[{"class_id": 0, "x": 0.2, "y": 0.2, "width": 0.3, "height": 0.3}], expected_label_mtime=current)
+    )
+    assert result["image"]["labelCount"] == 1
+    assert label.read_text(encoding="utf-8").strip().startswith("0 0.200000")

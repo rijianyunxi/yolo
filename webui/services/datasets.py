@@ -457,6 +457,7 @@ def image_record(image_path: Path, profile: str, split: str) -> dict[str, Any]:
         "hasLabel": label_path.exists(),
         "labelCount": len(boxes),
         "boxes": boxes,
+        "labelMtime": _label_file_mtime(label_path),
         "mtime": _file_mtime(image_path),
     }
 
@@ -467,6 +468,14 @@ def _file_mtime(image_path: Path) -> float:
         return image_path.stat().st_mtime
     except OSError:
         return 0.0
+
+
+def _label_file_mtime(label_path: Path) -> float | None:
+    """容错读取标签文件修改时间；文件不存在时返回 None，供多窗口保存冲突校验使用。"""
+    try:
+        return label_path.stat().st_mtime
+    except OSError:
+        return None
 
 
 def delete_dataset_images(profile: str, split: str, filenames: list[str]) -> dict[str, Any]:

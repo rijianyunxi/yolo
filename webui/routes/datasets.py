@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from ..config import DEFAULT_PROFILE, IMAGE_EXTS, VALID_SPLITS
 from ..services.dataset_check import load_dataset_report
 from ..services.datasets import (
+    _label_file_mtime,
     dataset_counts,
     dataset_index,
     delete_dataset_images,
@@ -45,6 +46,9 @@ class SaveLabelsRequest(BaseModel):
     split: str
     filename: str
     boxes: list[AnnotationBox] = Field(default_factory=list)
+    # 客户端保存时回传上次读取到的标签文件 mtime；None 表示当时无标签文件。
+    # 若与服务端当前值不一致，说明被其他窗口修改过，返回 409 避免后写覆盖先写。
+    expected_label_mtime: float | None = None
 
 
 class BatchDeleteImagesRequest(BaseModel):
@@ -152,6 +156,16 @@ def save_dataset_labels(payload: SaveLabelsRequest) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="训练图片不存在")
 
     label_path = labels_dir / f"{image_path.stem}.txt"
+    current_label_mtime = _label_file_mtime(label_path)
+    expected = payload.expected_label_mtime
+    if (expected is None) != (current_label_mtime is None) or (
+        expected is not None and abs(expected - current_label_mtime) > 1e-6
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="标注已被其他窗口修改，请重新加载后再编辑",
+        )
+
     lines = []
     for box in payload.boxes:
         lines.append(

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { api } from './api';
+import { ApiError, api } from './api';
 
 /**
  * mock fetch：拒绝时始终带出 signal 的中止原因，与真实 fetch 行为一致，
@@ -132,6 +132,17 @@ describe('api 错误归一化', () => {
       ),
     );
     await expect(api.get('/api/proxy')).rejects.toThrow('Bad Gateway');
+  });
+
+  it('409 时抛出 ApiError 且携带状态码', async () => {
+    stubFetch().mockResolvedValue(
+      jsonResponse({ detail: '标注已被其他窗口修改，请重新加载后再编辑' }, { status: 409 }),
+    );
+    const error = await api.get('/api/dataset/labels').catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe('标注已被其他窗口修改，请重新加载后再编辑');
+    expect(error).toMatchObject({ name: 'ApiError', status: 409 });
+    expect(error).toBeInstanceOf(ApiError);
   });
 });
 

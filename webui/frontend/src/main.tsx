@@ -49,7 +49,7 @@ import type {
   Task,
   TrainedModel,
 } from './types';
-import { api } from './api';
+import { api, ApiError } from './api';
 import {
   MENU_PATHS,
   copyText,
@@ -124,7 +124,7 @@ function App() {
   const [annotationImagesError, setAnnotationImagesError] = useState('');
   const [annotationStatusLoading, setAnnotationStatusLoading] = useState(false);
   const [annotationStatusError, setAnnotationStatusError] = useState('');
-  const [saveDialog, setSaveDialog] = useState<{ kind: 'success' | 'error'; message: string } | null>(null);
+  const [saveDialog, setSaveDialog] = useState<{ kind: 'success' | 'error'; message: string; actionLabel?: string; onAction?: () => void } | null>(null);
   const [predictionMessage, setPredictionMessage] = useState('');
   const [predictionResultsLoading, setPredictionResultsLoading] = useState(false);
   const [predictionResultsError, setPredictionResultsError] = useState('');
@@ -301,6 +301,7 @@ function App() {
   // 保存标注提示：1 秒后自动关闭（类似 Element UI message）
   useEffect(() => {
     if (!saveDialog) return;
+    if (saveDialog.onAction) return;
     const timer = window.setTimeout(() => setSaveDialog(null), 1000);
     return () => window.clearTimeout(timer);
   }, [saveDialog]);
@@ -1064,6 +1065,7 @@ function App() {
         profile: selectedImage.profile,
         split: selectedImage.split,
         filename: selectedImage.name,
+        expected_label_mtime: selectedImage.labelMtime ?? null,
         boxes: annotationBoxes.map((box) => ({
           class_id: box.classId,
           x: box.x,
@@ -1097,9 +1099,39 @@ function App() {
     } catch (error) {
       const saveMessage = error instanceof Error ? error.message : '保存标注失败';
       setAnnotationMessage(saveMessage);
-      setSaveDialog({ kind: 'error', message: `保存失败：${saveMessage}` });
+      const conflict = error instanceof ApiError && error.status === 409;
+      setSaveDialog(
+        conflict
+          ? {
+              kind: 'error',
+              message: saveMessage,
+              actionLabel: '重新加载图片',
+              onAction: () => {
+                void reloadCurrentAnnotation();
+              },
+            }
+          : { kind: 'error', message: `保存失败：${saveMessage}` },
+      );
     } finally {
       setSavingAnnotation(false);
+    }
+  }
+
+  async function reloadCurrentAnnotation() {
+    if (!selectedImage) return;
+    const currentName = selectedImage.name;
+    setSaveDialog(null);
+    const images = await loadAnnotationImages(annotateSplit, annotationPage, annotationLabelFilter, true);
+    if (!selectedImage || selectedImage.name !== currentName) return;
+    const fresh = images.find((item) => item.name === currentName);
+    if (fresh) {
+      setSelectedImage(fresh);
+      annotationBoxesRef.current = fresh.boxes;
+      setAnnotationBoxes(fresh.boxes);
+      resetAnnotationHistory(fresh.boxes);
+      setAnnotationDirty(false);
+      setSelectedBoxIndex(null);
+      setAnnotationMessage('标注已重新加载，请基于最新内容编辑');
     }
   }
 
@@ -2263,6 +2295,11 @@ function App() {
           <div className={`save-toast ${saveDialog.kind}`} role="status">
             {saveDialog.kind === 'success' ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />}
             <span>{saveDialog.message}</span>
+            {saveDialog.onAction && saveDialog.actionLabel ? (
+              <button type="button" className="save-toast-action" onClick={saveDialog.onAction}>
+                {saveDialog.actionLabel}
+              </button>
+            ) : null}
           </div>
         ) : null}
       </main>
