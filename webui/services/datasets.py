@@ -39,6 +39,8 @@ from .profiles import profile_classes, profile_config
 
 _label_locks_guard = threading.Lock()
 _label_locks: dict[str, threading.Lock] = {}
+# 进程内串行化“检查目标名 + 移入正式目录”，避免并发上传在同名检查处互相越过。
+_UPLOAD_COMMIT_LOCK = threading.Lock()
 
 
 def _label_lock(label_path: Path) -> threading.Lock:
@@ -533,6 +535,55 @@ def delete_dataset_images(profile: str, split: str, filenames: list[str]) -> dic
     invalidate_dataset_counts(profile)
     invalidate_dataset_index(profile, split)
     return {"deleted": deleted, "dataset": dataset_counts(profile)}
+
+def _upload_record(target: Path) -> dict[str, Any]:
+    try:
+        rel_path = target.relative_to(ROOT).as_posix()
+    except ValueError:
+        rel_path = str(target)
+    return {"name": target.name, "path": rel_path}
+
+
+def _commit_staged_upload(source: Path, target_dir: Path) -> tuple[dict[str, Any], Path]:
+    """将暂存文件移动到正式目录；同名文件不覆盖，自动追加短随机后缀。"""
+    target = target_dir / source.name
+    if target.exists():
+        target = target_dir / f"{target.stem}_{uuid.uuid4().hex[:6]}{target.suffix}"
+    os.replace(source, target)
+    return _upload_record(target), target
+
+
+def commit_staged_uploads(
+    staged_images: list[dict[str, Any]],
+    staged_labels: list[dict[str, Any]],
+    staging_image_dir: Path,
+    staging_label_dir: Path,
+    image_dir: Path,
+    label_dir: Path,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """把全部暂存文件提交到数据集目录；任一文件失败时回滚本次新写入的文件。"""
+    committed: list[Path] = []
+    with _UPLOAD_COMMIT_LOCK:
+        try:
+            image_dir.mkdir(parents=True, exist_ok=True)
+            label_dir.mkdir(parents=True, exist_ok=True)
+            committed_images: list[dict[str, Any]] = []
+            for item in staged_images:
+                record, target = _commit_staged_upload(staging_image_dir / item["name"], image_dir)
+                committed_images.append(record)
+                committed.append(target)
+            committed_labels: list[dict[str, Any]] = []
+            for item in staged_labels:
+                record, target = _commit_staged_upload(staging_label_dir / item["name"], label_dir)
+                committed_labels.append(record)
+                committed.append(target)
+            return committed_images, committed_labels
+        except Exception:
+            # 常规目标都是本次新增文件且不覆盖旧文件，因此可直接移除回滚。
+            for target in reversed(committed):
+                target.unlink(missing_ok=True)
+            raise
+
 
 _UPLOAD_CHUNK_BYTES = 1024 * 1024
 

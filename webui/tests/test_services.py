@@ -270,6 +270,72 @@ def test_save_yolo_labels_atomic_can_clear_existing_file(tmp_path):
     assert label_path.read_text(encoding="utf-8") == ""
 
 
+def test_commit_staged_uploads_commits_without_overwriting(tmp_path):
+    import webui.services.datasets as datasets
+
+    staging = tmp_path / "staging"
+    image_dir = tmp_path / "images"
+    label_dir = tmp_path / "labels"
+    staging.mkdir()
+    image_dir.mkdir()
+    label_dir.mkdir()
+    (staging / "new.png").write_bytes(b"new-image")
+    (staging / "new.txt").write_text("0 0.5 0.5 0.2 0.3\n", encoding="utf-8")
+    (image_dir / "new.png").write_bytes(b"existing-image")
+
+    saved_images, saved_labels = datasets.commit_staged_uploads(
+        [{"name": "new.png"}],
+        [{"name": "new.txt"}],
+        staging,
+        staging,
+        image_dir,
+        label_dir,
+    )
+
+    assert len(saved_images) == 1
+    assert saved_images[0]["name"] != "new.png"
+    assert saved_images[0]["name"].startswith("new_")
+    assert saved_labels[0]["name"] == "new.txt"
+    assert (image_dir / "new.png").read_bytes() == b"existing-image"
+    assert next(path for path in image_dir.iterdir() if path.name != "new.png").read_bytes() == b"new-image"
+    assert (label_dir / "new.txt").exists()
+
+
+def test_commit_staged_uploads_rolls_back_already_moved_files(tmp_path, monkeypatch):
+    import webui.services.datasets as datasets
+
+    staging = tmp_path / "staging"
+    image_dir = tmp_path / "images"
+    label_dir = tmp_path / "labels"
+    staging.mkdir()
+    image_dir.mkdir()
+    label_dir.mkdir()
+    (staging / "first.png").write_bytes(b"first")
+    (staging / "second.png").write_bytes(b"second")
+    original_replace = datasets.os.replace
+    calls = 0
+
+    def replace_then_fail(source, target):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("commit failed")
+        return original_replace(source, target)
+
+    monkeypatch.setattr(datasets.os, "replace", replace_then_fail)
+    with pytest.raises(OSError, match="commit failed"):
+        datasets.commit_staged_uploads(
+            [{"name": "first.png"}, {"name": "second.png"}],
+            [],
+            staging,
+            staging,
+            image_dir,
+            label_dir,
+        )
+
+    assert list(image_dir.iterdir()) == []
+    assert (staging / "second.png").read_bytes() == b"second"
+
 
 def test_thumbnail_generation_is_cached_and_invalidated(tmp_path, monkeypatch):
     import cv2

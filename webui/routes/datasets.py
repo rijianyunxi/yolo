@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import shutil
+import tempfile
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
@@ -17,13 +20,14 @@ from ..services.datasets import (
     image_record,
     invalidate_dataset_counts,
     invalidate_dataset_index,
+    commit_staged_uploads,
     safe_filename,
     save_upload,
     save_yolo_labels_atomic,
     split_paths,
     validate_yolo_label_file,
 )
-from ..services.profiles import profile_classes, resolve_profile
+from ..services.profiles import profile_classes, profile_config, resolve_profile
 
 router = APIRouter()
 
@@ -70,24 +74,38 @@ async def upload_dataset(
 
     profile = resolve_profile(profile)
     image_dir, label_dir = split_paths(profile, split)
-    image_dir.mkdir(parents=True, exist_ok=True)
-    label_dir.mkdir(parents=True, exist_ok=True)
+    dataset_root = Path(profile_config(profile)["root"])
+    staging_dir = Path(tempfile.mkdtemp(prefix=".upload-", dir=dataset_root))
 
-    saved_images = []
-    saved_labels = []
-    for image in images:
-        if image.filename:
-            saved_images.append(await save_upload(image, image_dir, IMAGE_EXTS))
-    for label in labels:
-        if label.filename:
-            saved_label = await save_upload(label, label_dir, {".txt"})
-            label_path = label_dir / saved_label["name"]
-            try:
-                validate_yolo_label_file(label_path, profile)
-            except HTTPException:
-                label_path.unlink(missing_ok=True)
-                raise
-            saved_labels.append(saved_label)
+    try:
+        staging_images = staging_dir / "images"
+        staging_labels = staging_dir / "labels"
+        staging_images.mkdir()
+        staging_labels.mkdir()
+
+        staged_images = []
+        staged_labels = []
+        for image in images:
+            if image.filename:
+                staged_images.append(await save_upload(image, staging_images, IMAGE_EXTS))
+        for label in labels:
+            if label.filename:
+                staged_labels.append(await save_upload(label, staging_labels, {".txt"}))
+
+        # 先完成全量校验，再进入正式目录；任何非法文件都不会污染现有数据集。
+        for staged_label in staged_labels:
+            validate_yolo_label_file(staging_labels / staged_label["name"], profile)
+
+        saved_images, saved_labels = commit_staged_uploads(
+            staged_images,
+            staged_labels,
+            staging_images,
+            staging_labels,
+            image_dir,
+            label_dir,
+        )
+    finally:
+        shutil.rmtree(staging_dir, ignore_errors=True)
 
     invalidate_dataset_counts(profile)
     invalidate_dataset_index(profile, split)

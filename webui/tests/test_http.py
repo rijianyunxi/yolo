@@ -330,3 +330,49 @@ def test_http_dataset_images_uses_index_and_unknown_api_still_404(client):
     unknown = client.get("/api/no-such-endpoint")
     assert unknown.status_code == 404
     assert unknown.json()["detail"] == "接口不存在"
+
+
+def test_http_dataset_upload_invalid_label_does_not_leave_partial_files(monkeypatch, client, tmp_path):
+    from webui.routes import datasets as datasets_route
+    from webui.services import datasets as datasets_service
+    import io
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (8, 8), (10, 20, 30)).save(buf, format="PNG")
+    png_bytes = buf.getvalue()
+
+    images_dir = tmp_path / "images" / "train"
+    labels_dir = tmp_path / "labels" / "train"
+    images_dir.mkdir(parents=True)
+    labels_dir.mkdir(parents=True)
+    (images_dir / "old.png").write_bytes(b"old-image")
+    (labels_dir / "old.txt").write_text("0 0.5 0.5 0.2 0.3\n", encoding="utf-8")
+
+    monkeypatch.setattr(datasets_service, "ROOT", tmp_path)
+    monkeypatch.setattr(datasets_route, "resolve_profile", lambda value: "tx-profile")
+    monkeypatch.setattr(datasets_route, "split_paths", lambda profile, split: (images_dir, labels_dir))
+    classes = [{"id": 0, "name": "cat", "displayName": "Cat"}]
+    # validate_yolo_label_file 使用 service 模块内的名字绑定。
+    monkeypatch.setattr(datasets_route, "profile_classes", lambda profile: classes)
+    monkeypatch.setattr(datasets_service, "profile_classes", lambda profile: classes)
+    monkeypatch.setattr(datasets_route, "profile_config", lambda profile: {"root": tmp_path})
+    monkeypatch.setattr(datasets_route, "invalidate_dataset_counts", lambda profile: None)
+    monkeypatch.setattr(datasets_route, "invalidate_dataset_index", lambda profile, split=None: None)
+
+    response = client.post(
+        "/api/dataset/upload",
+        data={"profile": "tx-profile", "split": "train"},
+        files={
+            "images": ("new.png", png_bytes, "image/png"),
+            "labels": ("new.txt", "9 0.5 0.5 0.2 0.3\n", "text/plain"),
+        },
+    )
+
+    assert response.status_code == 400
+    assert "标签类别不存在" in response.json()["detail"]
+    assert (images_dir / "old.png").read_bytes() == b"old-image"
+    assert (labels_dir / "old.txt").read_text(encoding="utf-8") == "0 0.5 0.5 0.2 0.3\n"
+    assert not (images_dir / "new.png").exists()
+    assert not (labels_dir / "new.txt").exists()
+    assert not list(tmp_path.glob(".upload-*"))
