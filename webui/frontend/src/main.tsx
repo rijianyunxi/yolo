@@ -67,6 +67,7 @@ import { AppErrorBoundary } from './components/AppErrorBoundary';
 import { Pagination } from './components/Pagination';
 import { StatCard } from './components/StatCard';
 import { PredictionPanel } from './components/PredictionPanel';
+import { TrainingPanel } from './components/TrainingPanel';
 import { useTaskPolling } from './hooks/useTaskPolling';
 import { TtlLruCache } from './utils/ttlCache';
 
@@ -1825,79 +1826,27 @@ function App() {
           />
         ) : null}
         {menu === 'training' ? (
-          <section className="page-stack">
-            <section className="panel">
-              <div className="panel-head">
-                <h2>训练任务</h2>
-                <span className={running ? 'pill live' : 'pill'}>{taskState(task?.status)}</span>
-              </div>
-              <div className="training-params">
-                <label><span>训练轮数</span><input type="number" min="1" max="10000" value={trainEpochs} onChange={(event) => setTrainEpochs(event.target.value)} /></label>
-                <label><span>图片尺寸</span><input type="number" min="32" step="32" max="4096" value={trainImageSize} onChange={(event) => setTrainImageSize(event.target.value)} /></label>
-                <label><span>Batch</span><input type="number" min="1" max="512" value={trainBatch} onChange={(event) => setTrainBatch(event.target.value)} /></label>
-                <label><span>设备</span><select value={trainDevice} onChange={(event) => setTrainDevice(event.target.value as 'auto' | 'cpu' | 'cuda')}><option value="auto">自动</option><option value="cpu">CPU</option><option value="cuda" disabled={!status?.cuda}>CUDA{status?.cuda ? '' : '（不可用）'}</option></select></label>
-                <label><span>数据加载 workers</span><input type="number" min="0" max="32" value={trainWorkers} onChange={(event) => setTrainWorkers(event.target.value)} /></label>
-                <label className="training-model-field"><span>基础模型（可选）</span><input value={trainModel} onChange={(event) => setTrainModel(event.target.value)} placeholder="例如 yolo11n.pt" /></label>
-              </div>
-              <div className="action-grid">
-                <button type="button" className="primary" disabled={busy || running} onClick={() => void runTask('/api/tasks/train-smoke', { epochs: 5, imgsz: 416, batch: 4, device: trainDevice, workers: Number(trainWorkers), model: trainModel || null })}>
-                  <Play size={16} />
-                  CPU 快速试训
-                </button>
-                <button type="button" className="btn" disabled={busy || running} onClick={() => void runTask('/api/tasks/train-full', { epochs: Number(trainEpochs), imgsz: Number(trainImageSize), batch: Number(trainBatch), device: trainDevice, workers: Number(trainWorkers), model: trainModel || null })}>
-                  <Play size={16} />
-                  开始正式训练
-                </button>
-                <button type="button" className="btn danger" disabled={!running} onClick={() => void stopTask()}>
-                  <X size={16} />
-                  停止当前任务
-                </button>
-              </div>
-              <p className="help">训练启动前会自动执行数据集质量检查和资源检查；存在阻断问题时不会启动训练。快速试训固定为 5 轮、416 尺寸、Batch 4。</p>
-              {resourceSnapshot ? (
-                <div className={`resource-summary ${resourceSnapshot.ready ? 'success' : 'danger'}`}>
-                  <strong>{resourceSnapshot.ready ? '资源检查通过' : '资源检查阻断，暂不能启动训练'}</strong>
-                  <span>磁盘可用 {formatBytes(resourceSnapshot.disk.freeBytes)}，内存可用 {formatBytes(resourceSnapshot.memory.availableBytes)}，CPU {resourceSnapshot.cpu.loadPercent.toFixed(0)}%</span>
-                  {resourceSnapshot.gpu?.freeBytes ? <span>GPU 可用显存 {formatBytes(resourceSnapshot.gpu.freeBytes)}</span> : null}
-                  {[...resourceSnapshot.blocking, ...resourceSnapshot.warnings].map((message) => <span key={message}>{message}</span>)}
-                </div>
-              ) : null}
-              {task?.metrics ? (
-                <div className="metrics-panel">
-                  <div className="panel-head"><h3>训练指标</h3><span className="pill">第 {task.metrics.current.epoch} / {typeof task.params?.epochs === 'number' ? task.params.epochs : '?'} 轮</span></div>
-                  <div className="metrics-grid">
-                    <div><span>当前 mAP50-95</span><strong>{task.metrics.current.mAP50_95 == null ? '-' : task.metrics.current.mAP50_95.toFixed(4)}</strong></div>
-                    <div><span>最佳 mAP50-95</span><strong>{task.metrics.best.mAP50_95 == null ? '-' : task.metrics.best.mAP50_95.toFixed(4)}（第 {task.metrics.best.epoch} 轮）</strong></div>
-                    <div><span>Precision</span><strong>{task.metrics.current.precision == null ? '-' : task.metrics.current.precision.toFixed(4)}</strong></div>
-                    <div><span>Recall</span><strong>{task.metrics.current.recall == null ? '-' : task.metrics.current.recall.toFixed(4)}</strong></div>
-                    <div><span>Loss</span><strong>{task.metrics.current.loss.total == null ? '-' : task.metrics.current.loss.total.toFixed(4)}</strong></div>
-                  </div>
-                </div>
-              ) : null}
-              <div className="job-info">
-                <div>
-                  <span>任务名称</span>
-                  <strong>{taskName(task?.kind)}</strong>
-                </div>
-                <div>
-                  <span>开始时间</span>
-                  <strong>{formatTime(task?.startedAt)}</strong>
-                </div>
-                <div>
-                  <span>执行命令</span>
-                  <strong>{task?.command.join(' ') || '-'}</strong>
-                </div>
-                <div>
-                  <span>训练参数</span>
-                  <strong>{task?.params ? JSON.stringify(task.params) : '-'}</strong>
-                </div>
-                <div>
-                  <span>结果目录</span>
-                  <strong>{shortPath(task?.resultDir)}</strong>
-                </div>
-              </div>
-            </section>
-          </section>
+          <TrainingPanel
+            task={task}
+            status={status}
+            resourceSnapshot={resourceSnapshot}
+            busy={busy}
+            running={running}
+            trainEpochs={trainEpochs}
+            trainImageSize={trainImageSize}
+            trainBatch={trainBatch}
+            trainDevice={trainDevice}
+            trainWorkers={trainWorkers}
+            trainModel={trainModel}
+            onTrainEpochsChange={setTrainEpochs}
+            onTrainImageSizeChange={setTrainImageSize}
+            onTrainBatchChange={setTrainBatch}
+            onTrainDeviceChange={setTrainDevice}
+            onTrainWorkersChange={setTrainWorkers}
+            onTrainModelChange={setTrainModel}
+            onRunTask={(endpoint, body) => void runTask(endpoint, body)}
+            onStopTask={() => void stopTask()}
+          />
         ) : null}
 
         {menu === 'prediction' ? (
