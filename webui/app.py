@@ -21,8 +21,8 @@ app.include_router(profiles.router)
 app.include_router(datasets.router)
 app.include_router(models.router)
 app.include_router(predictions.router)
-app.include_router(files.router)
 app.include_router(cache.router)
+app.include_router(files.router)
 
 
 @app.middleware("http")

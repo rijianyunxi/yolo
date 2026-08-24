@@ -908,3 +908,95 @@ def test_model_cache_evicts_oldest_beyond_cap(monkeypatch, tmp_path):
         with model_cache_lock:
             model_cache.clear()
             model_cache.update(saved)
+
+
+
+def test_dataset_index_builds_natural_sorted_entries_with_label_state(monkeypatch, tmp_path):
+    import webui.services.datasets as datasets
+
+    images_dir = tmp_path / "images"
+    labels_dir = tmp_path / "labels"
+    images_dir.mkdir()
+    labels_dir.mkdir()
+    for name in ["img_2.jpg", "img_10.jpg", "img_1.jpg", "a.jpg", "notes.txt"]:
+        (images_dir / name).write_bytes(b"x")
+    (labels_dir / "img_1.txt").write_text("0 0.5 0.5 0.2 0.2\n", encoding="utf-8")
+
+    monkeypatch.setattr(datasets, "split_paths", lambda profile, split: (images_dir, labels_dir))
+    monkeypatch.setattr(datasets, "dataset_index_cache", {})
+    monkeypatch.setattr(datasets, "dataset_index_ttl", 60)
+    entries = datasets.dataset_index("fake", "train")
+    assert [name for name, _ in entries] == ["a.jpg", "img_1.jpg", "img_2.jpg", "img_10.jpg"]
+    state = dict(entries)
+    assert state["img_1.jpg"] is True
+    assert state["img_10.jpg"] is False
+    assert "notes.txt" not in state
+
+
+def test_dataset_index_ttl_expiration_and_explicit_invalidation(monkeypatch, tmp_path):
+    import webui.services.datasets as datasets
+
+    images_dir = tmp_path / "images"
+    labels_dir = tmp_path / "labels"
+    images_dir.mkdir()
+    labels_dir.mkdir()
+    (images_dir / "one.jpg").write_bytes(b"x")
+    monkeypatch.setattr(datasets, "split_paths", lambda profile, split: (images_dir, labels_dir))
+    monkeypatch.setattr(datasets, "dataset_index_cache", {})
+    monkeypatch.setattr(datasets, "dataset_index_ttl", 60)
+
+    assert [n for n, _ in datasets.dataset_index("fake", "train")] == ["one.jpg"]
+
+    # TTL 内目录变化仍命中旧索引（快路径）
+    (images_dir / "two.jpg").write_bytes(b"x")
+    assert [n for n, _ in datasets.dataset_index("fake", "train")] == ["one.jpg"]
+
+    # 显式失效后重建
+    datasets.invalidate_dataset_index("fake", "train")
+    assert [n for n, _ in datasets.dataset_index("fake", "train")] == ["one.jpg", "two.jpg"]
+
+    # TTL 过期后自动重建
+    monkeypatch.setattr(datasets, "dataset_index_ttl", -1)
+    (images_dir / "three.jpg").write_bytes(b"x")
+    assert [n for n, _ in datasets.dataset_index("fake", "train")] == ["one.jpg", "three.jpg", "two.jpg"]
+
+
+def test_dataset_index_invalidate_all_splits_and_stats(monkeypatch, tmp_path):
+    import webui.services.datasets as datasets
+
+    images_dir = tmp_path / "images"
+    labels_dir = tmp_path / "labels"
+    images_dir.mkdir()
+    labels_dir.mkdir()
+    (images_dir / "x.jpg").write_bytes(b"x")
+    monkeypatch.setattr(datasets, "split_paths", lambda profile, split: (images_dir, labels_dir))
+    monkeypatch.setattr(datasets, "dataset_index_cache", {})
+    monkeypatch.setattr(datasets, "dataset_index_ttl", 60)
+    monkeypatch.setattr(
+        datasets,
+        "dataset_index_cache_stats",
+        {"hits": 0, "misses": 0, "expirations": 0, "invalidations": 0, "entries": 0},
+    )
+
+    datasets.dataset_index("fake", "train")
+    datasets.dataset_index("fake", "val")
+    datasets.dataset_index("fake", "train")  # 命中
+    stats = datasets.dataset_index_cache_stats_snapshot()
+    assert stats["hits"] == 1
+    assert stats["misses"] == 2
+    assert stats["entries"] == 2
+    assert stats["hitRate"] == 1 / 3
+
+    datasets.invalidate_dataset_index("fake")
+    assert datasets.dataset_index_cache_stats_snapshot()["invalidations"] == 2
+    assert datasets.dataset_index_cache_stats_snapshot()["entries"] == 0
+
+
+def test_dataset_index_missing_dir_returns_empty(monkeypatch, tmp_path):
+    import webui.services.datasets as datasets
+
+    missing_images = tmp_path / "no_such_dir"
+    missing_labels = tmp_path / "no_such_labels"
+    monkeypatch.setattr(datasets, "split_paths", lambda profile, split: (missing_images, missing_labels))
+    monkeypatch.setattr(datasets, "dataset_index_cache", {})
+    assert datasets.dataset_index("fake", "train") == []

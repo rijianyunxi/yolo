@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from pathlib import Path
 from typing import Any
 
@@ -11,9 +10,11 @@ from ..config import DEFAULT_PROFILE, IMAGE_EXTS, VALID_SPLITS
 from ..services.dataset_check import load_dataset_report
 from ..services.datasets import (
     dataset_counts,
+    dataset_index,
     delete_dataset_images,
     image_record,
     invalidate_dataset_counts,
+    invalidate_dataset_index,
     safe_filename,
     save_upload,
     save_yolo_labels_atomic,
@@ -29,16 +30,6 @@ router = APIRouter()
 def get_dataset_check(profile: str = DEFAULT_PROFILE) -> dict[str, Any]:
     profile = resolve_profile(profile)
     return {"report": load_dataset_report(profile)}
-
-
-def _natural_sort_key(name: str) -> list[tuple[int, int | str]]:
-    """Natural sort key: splits a filename into digit/non-digit chunks so that
-    1, 2, 10, 100 sort numerically instead of lexically."""
-    return [
-        (0, int(chunk)) if chunk.isdigit() else (1, chunk.lower())
-        for chunk in re.split(r"(\d+)", name)
-        if chunk != ""
-    ]
 
 
 class AnnotationBox(BaseModel):
@@ -94,6 +85,7 @@ async def upload_dataset(
             saved_labels.append(saved_label)
 
     invalidate_dataset_counts(profile)
+    invalidate_dataset_index(profile, split)
 
     return {
         "savedImages": saved_images,
@@ -105,15 +97,13 @@ async def upload_dataset(
 @router.get("/api/dataset/images")
 def dataset_images(profile: str = DEFAULT_PROFILE, split: str = "train", page: int = 1, page_size: int = 60, label: str = "all") -> dict[str, Any]:
     profile = resolve_profile(profile)
-    images_dir, labels_dir = split_paths(profile, split)
-    all_images = sorted(
-        [path for path in images_dir.iterdir() if path.is_file() and path.suffix.lower() in IMAGE_EXTS],
-        key=lambda item: _natural_sort_key(item.name),
-    )
+    images_dir, _ = split_paths(profile, split)
+    # 目录索引缓存：预排序 (文件名, 是否有标签)，命中时避免全量扫描与逐文件 stat。
+    entries = dataset_index(profile, split)
     if label in ("labeled", "unlabeled"):
         want_label = label == "labeled"
-        all_images = [p for p in all_images if (labels_dir / f"{p.stem}.txt").exists() == want_label]
-    total = len(all_images)
+        entries = [(name, has_label) for name, has_label in entries if has_label == want_label]
+    total = len(entries)
     page = max(1, page)
     page_size = min(max(1, page_size), 200)
     page_count = (total + page_size - 1) // page_size if total else 0
@@ -122,7 +112,19 @@ def dataset_images(profile: str = DEFAULT_PROFILE, split: str = "train", page: i
     elif total == 0:
         page = 1
     start = (page - 1) * page_size
-    images = [image_record(path, profile, split) for path in all_images[start : start + page_size]]
+    page_names = [name for name, _ in entries[start : start + page_size]]
+
+    images = []
+    stale = False
+    for name in page_names:
+        image_path = images_dir / name
+        if not image_path.exists():
+            # 索引构建后文件被外部删除：跳过并失效索引，下一次请求重建。
+            stale = True
+            continue
+        images.append(image_record(image_path, profile, split))
+    if stale:
+        invalidate_dataset_index(profile, split)
     return {
         "profile": profile,
         "split": split,
@@ -158,6 +160,7 @@ def save_dataset_labels(payload: SaveLabelsRequest) -> dict[str, Any]:
     save_yolo_labels_atomic(label_path, lines)
 
     invalidate_dataset_counts(payload.profile)
+    invalidate_dataset_index(payload.profile, payload.split)
 
     return {
         "image": image_record(image_path, payload.profile, payload.split),
@@ -186,5 +189,6 @@ def delete_dataset_image(profile: str, split: str, filename: str) -> dict[str, A
         label_path.unlink()
 
     invalidate_dataset_counts(profile)
+    invalidate_dataset_index(profile, split)
 
     return {"dataset": dataset_counts(profile)}

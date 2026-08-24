@@ -111,7 +111,7 @@ def _ensure_split_dirs(root: Any) -> None:
 
 
 def create_profile(profile_id: str, title: str, classes: list[dict[str, Any]]) -> dict[str, Any]:
-    from ..services.datasets import invalidate_dataset_counts
+    from ..services.datasets import invalidate_dataset_counts, invalidate_dataset_index
 
     profile_id = (profile_id or "").strip()
     title = (title or "").strip()
@@ -133,11 +133,12 @@ def create_profile(profile_id: str, title: str, classes: list[dict[str, Any]]) -
     _write_profile_yaml(root / f"{profile_id}.yaml", profile_id, title, classes)
     refresh_profiles()
     invalidate_dataset_counts(profile_id)
+    invalidate_dataset_index(profile_id)
     return profile_payload(profile_id)
 
 
 def update_profile(profile_id: str, title: str | None = None, classes: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    from ..services.datasets import invalidate_dataset_counts
+    from ..services.datasets import invalidate_dataset_counts, invalidate_dataset_index
 
     config = profile_config(profile_id)
     raw = yaml.safe_load(config["config"].read_text(encoding="utf-8")) or {}
@@ -161,11 +162,12 @@ def update_profile(profile_id: str, title: str | None = None, classes: list[dict
     )
     refresh_profiles()
     invalidate_dataset_counts(profile_id)
+    invalidate_dataset_index(profile_id)
     return profile_payload(profile_id)
 
 
 def delete_profile(profile_id: str, delete_files: bool = False) -> dict[str, Any]:
-    from ..services.datasets import invalidate_dataset_counts
+    from ..services.datasets import invalidate_dataset_counts, invalidate_dataset_index
 
     config = profile_config(profile_id)
     if len(DATASET_PROFILES) <= 1:
@@ -176,6 +178,7 @@ def delete_profile(profile_id: str, delete_files: bool = False) -> dict[str, Any
         shutil.rmtree(root, ignore_errors=True)
     refresh_profiles()
     invalidate_dataset_counts(profile_id)
+    invalidate_dataset_index(profile_id)
     return {"deleted": profile_id, "deleteFiles": delete_files}
 
 

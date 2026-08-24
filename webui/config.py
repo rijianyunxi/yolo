@@ -102,9 +102,15 @@ predict_lock = threading.Lock()
 dataset_counts_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 dataset_counts_ttl = 3.0
 image_dims_cache: dict[tuple[str, float], tuple[int, int]] = {}
+# 数据集目录索引缓存：按 (profile, split) 缓存预排序图片文件名与标签状态，
+# 避免万级图片下列表请求反复全量扫描目录与 stat 标签文件；保存/上传/删除后显式失效。
+DATASET_INDEX_TTL_SECONDS = float(os.environ.get("YOLO_DATASET_INDEX_TTL_SECONDS", 10))
+dataset_index_ttl = DATASET_INDEX_TTL_SECONDS
+dataset_index_cache: dict[tuple[str, str], tuple[float, list[tuple[str, bool]]]] = {}
 
 # 缓存诊断计数只在进程内保留，不写入业务数据文件。
 dataset_counts_cache_stats = {"hits": 0, "misses": 0, "expirations": 0, "entries": 0}
+dataset_index_cache_stats = {"hits": 0, "misses": 0, "expirations": 0, "invalidations": 0, "entries": 0}
 image_dims_cache_stats = {"hits": 0, "misses": 0, "evictions": 0, "entries": 0}
 thumbnail_cache_lock = threading.RLock()
 storage_quota_lock = threading.RLock()

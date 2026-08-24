@@ -166,7 +166,59 @@ def test_cache_stats_route_exposes_lifecycle_metrics():
     from webui.routes import cache as cache_route
 
     result = cache_route.cache_stats()
-    assert {"datasetCounts", "imageDimensions", "thumbnails", "storage"}.issubset(result)
+    assert {"datasetCounts", "datasetIndex", "imageDimensions", "thumbnails", "storage"}.issubset(result)
     assert {"hits", "misses", "entries", "hitRate"}.issubset(result["datasetCounts"])
     assert {"hits", "misses", "entries", "hitRate"}.issubset(result["imageDimensions"])
     assert {"hits", "misses", "entries", "bytes", "hitRate"}.issubset(result["thumbnails"])
+
+
+
+def test_dataset_images_pagination_label_filter_and_missing_file(monkeypatch, tmp_path):
+    import webui.routes.datasets as routes
+    import webui.services.datasets as service
+
+    images_dir = tmp_path / "images" / "train"
+    labels_dir = tmp_path / "labels" / "train"
+    images_dir.mkdir(parents=True)
+    labels_dir.mkdir(parents=True)
+    for i in range(1, 13):
+        (images_dir / f"img_{i:02d}.jpg").write_bytes(b"x")
+    (labels_dir / "img_02.txt").write_text("0 0.5 0.5 0.2 0.2\n", encoding="utf-8")
+    (labels_dir / "img_10.txt").write_text("0 0.5 0.5 0.2 0.2\n", encoding="utf-8")
+
+    def fake_split_paths(_profile, _split):
+        return images_dir, labels_dir
+
+    monkeypatch.setattr(routes, "split_paths", fake_split_paths)
+    monkeypatch.setattr(service, "split_paths", fake_split_paths)
+    monkeypatch.setattr(routes, "profile_classes", lambda profile: [])
+    monkeypatch.setattr(routes, "resolve_profile", lambda profile: profile)
+    monkeypatch.setattr(service, "ROOT", tmp_path)
+    monkeypatch.setattr(service, "dataset_index_cache", {})
+
+    page2 = routes.dataset_images(profile="tmp", split="train", page=2, page_size=5, label="all")
+    assert page2["total"] == 12
+    assert page2["page"] == 2
+    assert page2["pageCount"] == 3
+    assert [img["name"] for img in page2["images"]] == [
+        "img_06.jpg",
+        "img_07.jpg",
+        "img_08.jpg",
+        "img_09.jpg",
+        "img_10.jpg",
+    ]
+
+    labeled = routes.dataset_images(profile="tmp", split="train", page_size=60, label="labeled")
+    assert [img["name"] for img in labeled["images"]] == ["img_02.jpg", "img_10.jpg"]
+
+    unlabeled = routes.dataset_images(profile="tmp", split="train", page_size=60, label="unlabeled")
+    assert len(unlabeled["images"]) == 10
+    assert all(not img["hasLabel"] for img in unlabeled["images"])
+
+    # 索引命中后文件被外部删除：跳过该页缺失文件并失效索引，下一次请求重建
+    (images_dir / "img_12.jpg").unlink()
+    after_delete = routes.dataset_images(profile="tmp", split="train", page=3, page_size=5, label="all")
+    assert [img["name"] for img in after_delete["images"]] == ["img_11.jpg"]
+    rebuilt = routes.dataset_images(profile="tmp", split="train", page=3, page_size=5, label="all")
+    assert rebuilt["total"] == 11
+    assert [img["name"] for img in rebuilt["images"]] == ["img_11.jpg"]

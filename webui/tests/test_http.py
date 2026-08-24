@@ -234,3 +234,34 @@ def test_http_response_includes_request_id_header(client):
     response = client.get("/api/classes")
     assert response.status_code == 200
     assert response.headers.get("X-Request-Id")
+
+
+
+def test_http_cache_stats_reachable_and_exposes_dataset_index(client):
+    # cache 路由需在 files 的 catch-all 之前注册，否则 /api/cache/stats 会被吞成 404
+    response = client.get("/api/cache/stats")
+    assert response.status_code == 200
+    body = response.json()
+    assert "datasetCounts" in body
+    index_stats = body["datasetIndex"]
+    assert {"hits", "misses", "expirations", "invalidations", "entries", "hitRate"}.issubset(index_stats)
+
+
+def test_http_dataset_images_uses_index_and_unknown_api_still_404(client):
+    first = client.get("/api/dataset/images?profile=cat&split=train&page=1&page_size=3")
+    assert first.status_code == 200
+    assert "images" in first.json()
+
+    stats = client.get("/api/cache/stats").json()["datasetIndex"]
+    assert stats["misses"] >= 1
+    assert stats["entries"] >= 1
+
+    # 再次请求应命中目录索引（hits 增加）
+    second = client.get("/api/dataset/images?profile=cat&split=train&page=1&page_size=3")
+    assert second.status_code == 200
+    stats2 = client.get("/api/cache/stats").json()["datasetIndex"]
+    assert stats2["hits"] > stats["hits"]
+
+    unknown = client.get("/api/no-such-endpoint")
+    assert unknown.status_code == 404
+    assert unknown.json()["detail"] == "接口不存在"

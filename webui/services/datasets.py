@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import threading
 import time
 import uuid
@@ -21,6 +22,9 @@ from ..config import (
     dataset_counts_cache,
     dataset_counts_cache_stats,
     dataset_counts_ttl,
+    dataset_index_cache,
+    dataset_index_cache_stats,
+    dataset_index_ttl,
     image_dims_cache,
     image_dims_cache_stats,
     THUMBNAIL_CACHE_MAX_BYTES,
@@ -134,6 +138,69 @@ def dataset_cache_stats_snapshot() -> dict[str, Any]:
     return {
         **dataset_counts_cache_stats,
         "hitRate": dataset_counts_cache_stats["hits"] / requests if requests else 0.0,
+    }
+
+
+def natural_sort_key(name: str) -> list[tuple[int, int | str]]:
+    """Natural sort key: splits a filename into digit/non-digit chunks so that
+    1, 2, 10, 100 sort numerically instead of lexically."""
+    return [
+        (0, int(chunk)) if chunk.isdigit() else (1, chunk.lower())
+        for chunk in re.split(r"(\d+)", name)
+        if chunk != ""
+    ]
+
+
+def dataset_index(profile: str, split: str) -> list[tuple[str, bool]]:
+    """返回按自然序排序的 (文件名, 是否有标签) 列表，带 TTL 目录索引缓存。
+
+    万级图片下避免每次列表请求全量扫描目录并对每个文件 stat 标签文件；
+    保存标注、上传、删除后调用 invalidate_dataset_index 显式失效。
+    """
+    cached = dataset_index_cache.get((profile, split))
+    if cached is not None and time.time() - cached[0] < dataset_index_ttl:
+        dataset_index_cache_stats["hits"] += 1
+        dataset_index_cache_stats["entries"] = len(dataset_index_cache)
+        return cached[1]
+    if cached is not None:
+        dataset_index_cache_stats["expirations"] += 1
+    dataset_index_cache_stats["misses"] += 1
+
+    images_dir, labels_dir = split_paths(profile, split)
+    entries: list[tuple[str, bool]] = []
+    try:
+        for path in images_dir.iterdir():
+            if path.is_file() and path.suffix.lower() in IMAGE_EXTS:
+                entries.append((path.name, (labels_dir / f"{path.stem}.txt").exists()))
+    except OSError:
+        # 分组目录尚未创建时按空列表处理，与 dataset_counts 行为一致。
+        entries = []
+    entries.sort(key=lambda item: natural_sort_key(item[0]))
+    dataset_index_cache[(profile, split)] = (time.time(), entries)
+    dataset_index_cache_stats["entries"] = len(dataset_index_cache)
+    return entries
+
+
+def invalidate_dataset_index(profile: str, split: str | None = None) -> None:
+    """显式失效某个配置（或指定分组）的目录索引。"""
+    keys = [
+        key
+        for key in dataset_index_cache
+        if key[0] == profile and (split is None or key[1] == split)
+    ]
+    for key in keys:
+        dataset_index_cache.pop(key, None)
+    if keys:
+        dataset_index_cache_stats["invalidations"] += len(keys)
+    dataset_index_cache_stats["entries"] = len(dataset_index_cache)
+
+
+def dataset_index_cache_stats_snapshot() -> dict[str, Any]:
+    dataset_index_cache_stats["entries"] = len(dataset_index_cache)
+    requests = dataset_index_cache_stats["hits"] + dataset_index_cache_stats["misses"]
+    return {
+        **dataset_index_cache_stats,
+        "hitRate": dataset_index_cache_stats["hits"] / requests if requests else 0.0,
     }
 
 
@@ -388,8 +455,16 @@ def image_record(image_path: Path, profile: str, split: str) -> dict[str, Any]:
         "hasLabel": label_path.exists(),
         "labelCount": len(parse_yolo_labels(label_path)),
         "boxes": parse_yolo_labels(label_path),
-        "mtime": image_path.stat().st_mtime,
+        "mtime": _file_mtime(image_path),
     }
+
+
+def _file_mtime(image_path: Path) -> float:
+    """容错读取修改时间；文件在索引构建后被外部删除时返回 0 而不是抛错。"""
+    try:
+        return image_path.stat().st_mtime
+    except OSError:
+        return 0.0
 
 
 def delete_dataset_images(profile: str, split: str, filenames: list[str]) -> dict[str, Any]:
@@ -415,6 +490,7 @@ def delete_dataset_images(profile: str, split: str, filenames: list[str]) -> dic
         deleted.append(image_path.name)
 
     invalidate_dataset_counts(profile)
+    invalidate_dataset_index(profile, split)
     return {"deleted": deleted, "dataset": dataset_counts(profile)}
 
 
