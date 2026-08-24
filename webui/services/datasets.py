@@ -504,6 +504,26 @@ def delete_dataset_images(profile: str, split: str, filenames: list[str]) -> dic
     invalidate_dataset_index(profile, split)
     return {"deleted": deleted, "dataset": dataset_counts(profile)}
 
+_UPLOAD_CHUNK_BYTES = 1024 * 1024
+
+
+def _verify_image_content(path: Path) -> None:
+    """用 Pillow 校验图片文件内容可读，阻止伪扩展名或损坏文件进入数据集。"""
+    from PIL import Image
+
+    previous_max_pixels = Image.MAX_IMAGE_PIXELS
+    Image.MAX_IMAGE_PIXELS = None
+    try:
+        with Image.open(path) as img:
+            img.verify()
+    except (OSError, ValueError, SyntaxError) as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="图片文件内容无法识别或已损坏",
+        ) from exc
+    finally:
+        Image.MAX_IMAGE_PIXELS = previous_max_pixels
+
 
 async def save_upload(file: UploadFile, target_dir: Path, allowed_exts: set[str]) -> dict[str, Any]:
     name = safe_filename(file.filename or "upload")
@@ -515,11 +535,21 @@ async def save_upload(file: UploadFile, target_dir: Path, allowed_exts: set[str]
     if target.exists():
         target = target_dir / f"{target.stem}_{uuid.uuid4().hex[:6]}{target.suffix}"
 
-    content = await file.read()
-    if len(content) > MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=413, detail=f"文件过大: {name}")
-
-    with target.open("wb") as out:
-        out.write(content)
+    total = 0
+    try:
+        with target.open("wb") as out:
+            while True:
+                chunk = await file.read(_UPLOAD_CHUNK_BYTES)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > MAX_UPLOAD_BYTES:
+                    raise HTTPException(status_code=413, detail=f"文件过大: {name}")
+                out.write(chunk)
+        if suffix in IMAGE_EXTS:
+            _verify_image_content(target)
+    except HTTPException:
+        target.unlink(missing_ok=True)
+        raise
 
     return {"name": target.name, "path": str(target)}

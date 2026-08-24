@@ -9,7 +9,7 @@ from starlette.datastructures import UploadFile
 
 sys.path.insert(0, "D:/work/yolo")
 
-from webui.config import DATASET_PROFILES, DEFAULT_PROFILE
+from webui.config import IMAGE_EXTS, DATASET_PROFILES, DEFAULT_PROFILE
 from webui.services.dataset_check import check_dataset
 from webui.services.training_metrics import parse_training_metrics
 from webui.services.resources import training_resource_snapshot
@@ -181,11 +181,38 @@ def test_validate_yolo_label_file_bad_format(tmp_path):
     assert exc.value.status_code == 400
 
 
-def test_save_upload_writes_and_rejects_bad_ext(tmp_path):
-    result = asyncio.run(save_upload(make_upload("a.jpg", b"xx"), tmp_path, {".jpg"}))
-    assert (tmp_path / result["name"]).exists()
+def _png_bytes() -> bytes:
+    import io
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (16, 16), (200, 30, 30)).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def test_save_upload_rejects_bad_ext_and_non_image_content(tmp_path):
+    # 非白名单扩展名被拒绝
     with pytest.raises(HTTPException):
         asyncio.run(save_upload(make_upload("b.txt", b"x"), tmp_path, {".jpg"}))
+    # 伪图片扩展名但内容不是图片 -> 400，且不残留文件
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(save_upload(make_upload("fake.jpg", b"xx"), tmp_path, {".jpg"}))
+    assert exc.value.status_code == 400
+    assert not list(tmp_path.iterdir())
+
+
+def test_save_upload_accepts_valid_image(tmp_path):
+    result = asyncio.run(save_upload(make_upload("cat.png", _png_bytes()), tmp_path, IMAGE_EXTS))
+    assert (tmp_path / result["name"]).exists()
+    assert result["path"]
+
+
+def test_save_upload_rejects_oversize_and_cleans_up(tmp_path, monkeypatch):
+    monkeypatch.setattr("webui.services.datasets.MAX_UPLOAD_BYTES", 8)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(save_upload(make_upload("big.jpg", b"0123456789"), tmp_path, {".jpg"}))
+    assert exc.value.status_code == 413
+    assert not list(tmp_path.iterdir())
 
 
 def test_save_yolo_labels_atomic_writes_expected_content(tmp_path):
