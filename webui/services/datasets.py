@@ -274,6 +274,31 @@ def parse_yolo_labels(label_path: Path) -> list[dict[str, Any]]:
     return boxes
 
 
+def count_yolo_labels(label_path: Path) -> int:
+    """统计有效 YOLO 标注行，但不构造 box 字典。
+
+    轻量列表只需要 labelCount；避免为每张图创建大量临时对象和响应负载。
+    """
+    if not label_path.exists():
+        return 0
+
+    count = 0
+    for line in label_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        parts = line.strip().split()
+        if len(parts) != 5:
+            continue
+        try:
+            int(parts[0])
+            float(parts[1])
+            float(parts[2])
+            float(parts[3])
+            float(parts[4])
+        except ValueError:
+            continue
+        count += 1
+    return count
+
+
 def image_dimensions(image_path: Path) -> tuple[int, int]:
     try:
         mtime = image_path.stat().st_mtime
@@ -438,14 +463,18 @@ def ensure_thumbnail(image_path: Path, width: int = 192) -> Path:
         prune_thumbnail_cache(force=True)
         return target
 
-def image_record(image_path: Path, profile: str, split: str) -> dict[str, Any]:
+def image_record(image_path: Path, profile: str, split: str, include_boxes: bool = True) -> dict[str, Any]:
     _, labels_dir = split_paths(profile, split)
     label_path = labels_dir / f"{image_path.stem}.txt"
     width, height = image_dimensions(image_path)
     rel = image_path.relative_to(ROOT).as_posix()
-    # 标签文件只解析一次：labelCount 与 boxes 复用同一份解析结果，减少大数据集分页时的重复文件 IO。
-    boxes = parse_yolo_labels(label_path)
-    return {
+    # 完整模式只解析一次：labelCount 与 boxes 复用结果；轻量列表跳过对象解析，仅统计有效行。
+    boxes: list[dict[str, Any]] | None = None
+    label_count = count_yolo_labels(label_path) if not include_boxes else 0
+    if include_boxes:
+        boxes = parse_yolo_labels(label_path)
+        label_count = len(boxes)
+    record = {
         "name": image_path.name,
         "stem": image_path.stem,
         "profile": profile,
@@ -455,11 +484,12 @@ def image_record(image_path: Path, profile: str, split: str) -> dict[str, Any]:
         "width": width,
         "height": height,
         "hasLabel": label_path.exists(),
-        "labelCount": len(boxes),
-        "boxes": boxes,
+        "labelCount": label_count,
+        "boxes": boxes or [],
         "labelMtime": _label_file_mtime(label_path),
         "mtime": _file_mtime(image_path),
     }
+    return record
 
 
 def _file_mtime(image_path: Path) -> float:

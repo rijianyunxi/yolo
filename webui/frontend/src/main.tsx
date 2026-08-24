@@ -816,7 +816,7 @@ function App() {
     } else {
       managedImagesCache.current.delete(key);
     }
-    const query = new URLSearchParams({ profile, split, page: String(page), page_size: '60', label });
+    const query = new URLSearchParams({ profile, split, page: String(page), page_size: '60', label, include_boxes: 'false' });
     try {
       const response = await api.get<DatasetImagePage>(`/api/dataset/images?${query.toString()}`);
       if (requestId !== managedImagesRequestId.current || profile !== datasetProfile) return;
@@ -873,9 +873,9 @@ function App() {
         setSelectedBoxIndex(null);
       } else if (match && selectedImage?.name !== match.name) {
         setSelectedImage(match);
-        annotationBoxesRef.current = match.boxes;
-        setAnnotationBoxes(match.boxes);
-        resetAnnotationHistory(match.boxes);
+        annotationBoxesRef.current = match.boxes || [];
+        setAnnotationBoxes(match.boxes || []);
+        resetAnnotationHistory(match.boxes || []);
         setAnnotationDirty(false);
         setSelectedBoxIndex(null);
       }
@@ -1021,10 +1021,11 @@ function App() {
   function selectAnnotationImage(image: DatasetImage, skipConfirm = false): boolean {
     if (selectedImage?.name === image.name && selectedImage.split === image.split && selectedImage.profile === image.profile) return true;
     if (!skipConfirm && annotationDirty && !window.confirm('当前标注尚未保存，确定切换图片吗？')) return false;
+    const boxes = image.boxes || [];
     setSelectedImage(image);
-    annotationBoxesRef.current = image.boxes;
-    setAnnotationBoxes(image.boxes);
-    resetAnnotationHistory(image.boxes);
+    annotationBoxesRef.current = boxes;
+    setAnnotationBoxes(boxes);
+    resetAnnotationHistory(boxes);
     setAnnotationDirty(false);
     setSelectedBoxIndex(null);
     setAnnotationMessage('');
@@ -1076,9 +1077,10 @@ function App() {
         })),
       });
       const updated = response.image;
+      const savedBoxes = updated.boxes || [];
       setSelectedImage(updated);
-      setAnnotationBoxes(updated.boxes);
-      resetAnnotationHistory(updated.boxes);
+      setAnnotationBoxes(savedBoxes);
+      resetAnnotationHistory(savedBoxes);
       setAnnotationDirty(false);
       const saveMessage = `已保存 ${updated.labelCount} 个标注框。`;
       setAnnotationMessage(saveMessage);
@@ -1127,9 +1129,9 @@ function App() {
     const fresh = images.find((item) => item.name === currentName);
     if (fresh) {
       setSelectedImage(fresh);
-      annotationBoxesRef.current = fresh.boxes;
-      setAnnotationBoxes(fresh.boxes);
-      resetAnnotationHistory(fresh.boxes);
+      annotationBoxesRef.current = fresh.boxes || [];
+      setAnnotationBoxes(fresh.boxes || []);
+      resetAnnotationHistory(fresh.boxes || []);
       setAnnotationDirty(false);
       setSelectedBoxIndex(null);
       setAnnotationMessage('标注已重新加载，请基于最新内容编辑');

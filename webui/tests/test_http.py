@@ -278,6 +278,40 @@ def test_http_dataset_images_response_matches_schema(client):
     assert len(parsed.images) == len(body["images"])
 
 
+def test_http_dataset_images_lightweight_mode_skips_boxes(client, monkeypatch, tmp_path):
+    from webui.routes import datasets as datasets_route
+    from webui.services import datasets as datasets_service
+
+    images_dir = tmp_path / "images" / "train"
+    labels_dir = tmp_path / "labels" / "train"
+    images_dir.mkdir(parents=True)
+    labels_dir.mkdir(parents=True)
+    (images_dir / "light.jpg").write_bytes(b"jpeg-bytes")
+    (labels_dir / "light.txt").write_text("0 0.5 0.5 0.2 0.3\n", encoding="utf-8")
+
+    monkeypatch.setattr(datasets_service, "ROOT", tmp_path)
+    monkeypatch.setattr(datasets_route, "resolve_profile", lambda value: "lightweight-only")
+    monkeypatch.setattr(datasets_service, "split_paths", lambda profile, split: (images_dir, labels_dir))
+    monkeypatch.setattr(datasets_route, "split_paths", lambda profile, split: (images_dir, labels_dir))
+    monkeypatch.setattr(datasets_route, "profile_classes", lambda profile: [])
+    monkeypatch.setattr(datasets_route, "invalidate_dataset_index", lambda profile, split=None: None)
+    recorded_calls = []
+    original_image_record = datasets_route.image_record
+
+    def recording_image_record(path, profile, split, **kwargs):
+        recorded_calls.append(kwargs)
+        return original_image_record(path, profile, split, **kwargs)
+
+    monkeypatch.setattr(datasets_route, "image_record", recording_image_record)
+
+    response = client.get("/api/dataset/images?profile=light&split=train&page=1&page_size=10&label=all&include_boxes=false")
+    assert response.status_code == 200, response.text
+    image = response.json()["images"][0]
+    assert recorded_calls == [{"include_boxes": False}]
+    assert image["labelCount"] == 1
+    assert image["boxes"] == []
+
+
 def test_http_dataset_images_uses_index_and_unknown_api_still_404(client):
     first = client.get("/api/dataset/images?profile=cat&split=train&page=1&page_size=3")
     assert first.status_code == 200

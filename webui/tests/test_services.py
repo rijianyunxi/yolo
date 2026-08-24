@@ -152,6 +152,29 @@ def test_image_record_parses_label_once_and_reports_label_state(monkeypatch, tmp
     assert record2["boxes"] == []
 
 
+def test_image_record_lightweight_mode_avoids_box_objects(monkeypatch, tmp_path):
+    import webui.services.datasets as ds
+
+    images_dir = tmp_path / "images" / "train"
+    labels_dir = tmp_path / "labels" / "train"
+    images_dir.mkdir(parents=True)
+    labels_dir.mkdir(parents=True)
+    (labels_dir / "a.txt").write_text("0 0.5 0.5 0.2 0.3\nbad-label\n", encoding="utf-8")
+    image_path = images_dir / "a.jpg"
+    image_path.write_bytes(b"jpeg-data")
+
+    monkeypatch.setattr(ds, "split_paths", lambda profile, split: (images_dir, labels_dir))
+    monkeypatch.setattr(ds, "ROOT", tmp_path)
+    monkeypatch.setattr(ds, "image_dimensions", lambda path: (120, 90))
+    monkeypatch.setattr(ds, "parse_yolo_labels", lambda path: (_ for _ in ()).throw(AssertionError("轻量模式不应构造 box 对象")))
+
+    record = ds.image_record(image_path, "tmp", "train", include_boxes=False)
+    assert record["width"] == 120
+    assert record["hasLabel"] is True
+    assert record["labelCount"] == 1
+    assert record["boxes"] == []
+
+
 def test_validate_yolo_label_file_ok(tmp_path):
     label = tmp_path / "ok.txt"
     label.write_text("0 0.5 0.5 0.2 0.3\n", encoding="utf-8")

@@ -100,7 +100,7 @@ async def upload_dataset(
 
 
 @router.get("/api/dataset/images", response_model=DatasetImagesResponse)
-def dataset_images(profile: str = DEFAULT_PROFILE, split: str = "train", page: int = 1, page_size: int = 60, label: str = "all") -> dict[str, Any]:
+def dataset_images(profile: str = DEFAULT_PROFILE, split: str = "train", page: int = 1, page_size: int = 60, label: str = "all", include_boxes: bool = True) -> dict[str, Any]:
     profile = resolve_profile(profile)
     images_dir, _ = split_paths(profile, split)
     # 目录索引缓存：预排序 (文件名, 是否有标签)，命中时避免全量扫描与逐文件 stat。
@@ -127,7 +127,7 @@ def dataset_images(profile: str = DEFAULT_PROFILE, split: str = "train", page: i
             # 索引构建后文件被外部删除：跳过并失效索引，下一次请求重建。
             stale = True
             continue
-        images.append(image_record(image_path, profile, split))
+        images.append(image_record(image_path, profile, split, include_boxes=include_boxes))
     if stale:
         invalidate_dataset_index(profile, split)
     return {

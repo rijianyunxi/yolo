@@ -156,7 +156,7 @@ export type DatasetImage = {
   height: number;
   hasLabel: boolean;
   labelCount: number;
-  boxes: Box[];
+  boxes?: Box[];
   mtime: number;
   labelMtime?: number | null;
 };
