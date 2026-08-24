@@ -104,6 +104,52 @@ def test_parse_yolo_labels_ignores_malformed(tmp_path):
     assert len(boxes) == 2
     assert boxes[0]["classId"] == 0
 
+def test_image_record_parses_label_once_and_reports_label_state(monkeypatch, tmp_path):
+    import webui.services.datasets as ds
+
+    images_dir = tmp_path / "images" / "train"
+    labels_dir = tmp_path / "labels" / "train"
+    images_dir.mkdir(parents=True)
+    labels_dir.mkdir(parents=True)
+    (labels_dir / "a.txt").write_text(
+        "0 0.5 0.5 0.2 0.3\n1 0.1 0.1 0.1 0.1\nnot-a-label\n",
+        encoding="utf-8",
+    )
+    labeled_image = images_dir / "a.jpg"
+    labeled_image.write_bytes(b"jpeg-data")
+
+    monkeypatch.setattr(ds, "split_paths", lambda profile, split: (images_dir, labels_dir))
+    monkeypatch.setattr(ds, "ROOT", tmp_path)
+    monkeypatch.setattr(ds, "image_dimensions", lambda path: (120, 90))
+
+    # 计数包装：断言 image_record 对同一标签文件只解析一次（labelCount / boxes 复用）。
+    parse_calls = {"count": 0}
+    original_parse = ds.parse_yolo_labels
+
+    def counting_parse(label_path):
+        parse_calls["count"] += 1
+        return original_parse(label_path)
+
+    monkeypatch.setattr(ds, "parse_yolo_labels", counting_parse)
+
+    record = ds.image_record(labeled_image, "tmp", "train")
+    assert record["stem"] == "a"
+    assert record["width"] == 120
+    assert record["height"] == 90
+    assert record["hasLabel"] is True
+    assert record["labelCount"] == 2
+    assert len(record["boxes"]) == 2
+    assert record["boxes"][0]["classId"] == 0
+    assert record["boxes"][0]["x"] == 0.5
+    assert parse_calls["count"] == 1, "标签文件应只解析一次"
+
+    unlabeled_image = images_dir / "b.jpg"
+    unlabeled_image.write_bytes(b"jpeg-data")
+    record2 = ds.image_record(unlabeled_image, "tmp", "train")
+    assert record2["hasLabel"] is False
+    assert record2["labelCount"] == 0
+    assert record2["boxes"] == []
+
 
 def test_validate_yolo_label_file_ok(tmp_path):
     label = tmp_path / "ok.txt"

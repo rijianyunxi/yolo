@@ -443,6 +443,8 @@ def image_record(image_path: Path, profile: str, split: str) -> dict[str, Any]:
     label_path = labels_dir / f"{image_path.stem}.txt"
     width, height = image_dimensions(image_path)
     rel = image_path.relative_to(ROOT).as_posix()
+    # 标签文件只解析一次：labelCount 与 boxes 复用同一份解析结果，减少大数据集分页时的重复文件 IO。
+    boxes = parse_yolo_labels(label_path)
     return {
         "name": image_path.name,
         "stem": image_path.stem,
@@ -453,8 +455,8 @@ def image_record(image_path: Path, profile: str, split: str) -> dict[str, Any]:
         "width": width,
         "height": height,
         "hasLabel": label_path.exists(),
-        "labelCount": len(parse_yolo_labels(label_path)),
-        "boxes": parse_yolo_labels(label_path),
+        "labelCount": len(boxes),
+        "boxes": boxes,
         "mtime": _file_mtime(image_path),
     }
 
