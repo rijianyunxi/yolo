@@ -247,6 +247,25 @@ def test_http_cache_stats_reachable_and_exposes_dataset_index(client):
     assert {"hits", "misses", "expirations", "invalidations", "entries", "hitRate"}.issubset(index_stats)
 
 
+def test_http_error_format_includes_code_message_request_id(client):
+    # 404 → not_found
+    response = client.get("/api/no-such-endpoint")
+    assert response.status_code == 404
+    body = response.json()
+    assert body["code"] == "not_found"
+    assert body["message"] == "接口不存在"
+    assert body["detail"] == "接口不存在"
+    assert "requestId" in body and body["requestId"]
+
+    # 400 → bad_request
+    response2 = client.get("/api/predictions?min_conf=1.5")
+    assert response2.status_code == 400
+    body2 = response2.json()
+    assert body2["code"] == "bad_request"
+    assert "置信度" in body2["message"]
+    assert body2["requestId"] == response2.headers["X-Request-Id"]
+
+
 def test_http_dataset_images_response_matches_schema(client):
     from webui.schemas import DatasetImagesResponse
 
