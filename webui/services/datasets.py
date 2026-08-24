@@ -27,6 +27,9 @@ from ..config import (
     dataset_index_ttl,
     image_dims_cache,
     image_dims_cache_stats,
+    label_count_cache,
+    label_count_cache_stats,
+    LABEL_COUNT_CACHE_MAX_ENTRIES,
     THUMBNAIL_CACHE_MAX_BYTES,
     THUMBNAIL_CACHE_MAX_ENTRIES,
     THUMBNAIL_CACHE_PRUNE_INTERVAL_SECONDS,
@@ -215,6 +218,15 @@ def image_dimensions_cache_stats_snapshot() -> dict[str, Any]:
     }
 
 
+def label_count_cache_stats_snapshot() -> dict[str, Any]:
+    label_count_cache_stats["entries"] = len(label_count_cache)
+    requests = label_count_cache_stats["hits"] + label_count_cache_stats["misses"]
+    return {
+        **label_count_cache_stats,
+        "hitRate": label_count_cache_stats["hits"] / requests if requests else 0.0,
+    }
+
+
 def safe_filename(name: str) -> str:
     cleaned = Path(name or "file").name.replace(" ", "_")
     allowed = []
@@ -276,14 +288,7 @@ def parse_yolo_labels(label_path: Path) -> list[dict[str, Any]]:
     return boxes
 
 
-def count_yolo_labels(label_path: Path) -> int:
-    """统计有效 YOLO 标注行，但不构造 box 字典。
-
-    轻量列表只需要 labelCount；避免为每张图创建大量临时对象和响应负载。
-    """
-    if not label_path.exists():
-        return 0
-
+def _read_and_count_yolo_labels(label_path: Path) -> int:
     count = 0
     for line in label_path.read_text(encoding="utf-8", errors="replace").splitlines():
         parts = line.strip().split()
@@ -298,6 +303,35 @@ def count_yolo_labels(label_path: Path) -> int:
         except ValueError:
             continue
         count += 1
+    return count
+
+
+def count_yolo_labels(label_path: Path) -> int:
+    """统计有效 YOLO 标注行，结果按路径 + mtime_ns + size 缓存。
+
+    轻量列表只需要 labelCount；缓存可避免同一页反复读取未变化的标签文件。
+    文件被保存、替换或删除后 stat 失效依据变化，自然读取新状态。
+    """
+    try:
+        stat = label_path.stat()
+    except OSError:
+        # 与旧实现 exists() 的容错语义一致：无法访问的标签按空标签处理。
+        return 0
+
+    key = (str(label_path.resolve()), stat.st_mtime_ns, stat.st_size)
+    cached = label_count_cache.get(key)
+    if cached is not None:
+        label_count_cache_stats["hits"] += 1
+        label_count_cache_stats["entries"] = len(label_count_cache)
+        return cached
+
+    label_count_cache_stats["misses"] += 1
+    count = _read_and_count_yolo_labels(label_path)
+    if len(label_count_cache) >= LABEL_COUNT_CACHE_MAX_ENTRIES:
+        label_count_cache.clear()
+        label_count_cache_stats["evictions"] += 1
+    label_count_cache[key] = count
+    label_count_cache_stats["entries"] = len(label_count_cache)
     return count
 
 

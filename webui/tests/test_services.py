@@ -105,6 +105,66 @@ def test_parse_yolo_labels_ignores_malformed(tmp_path):
     assert len(boxes) == 2
     assert boxes[0]["classId"] == 0
 
+def test_count_yolo_labels_cache_hits_until_file_changes(tmp_path, monkeypatch):
+    import os
+    import webui.services.datasets as datasets
+
+    label = tmp_path / "sample.txt"
+    label.write_text("0 0.5 0.5 0.2 0.2\n1 0.1 0.1 0.1 0.1\n", encoding="utf-8")
+    datasets.label_count_cache.clear()
+    datasets.label_count_cache_stats.update(hits=0, misses=0, evictions=0, entries=0)
+    reads = []
+    original_reader = datasets._read_and_count_yolo_labels
+
+    def counting_reader(path):
+        reads.append(path.name)
+        return original_reader(path)
+
+    monkeypatch.setattr(datasets, "_read_and_count_yolo_labels", counting_reader)
+
+    assert datasets.count_yolo_labels(label) == 2
+    assert datasets.count_yolo_labels(label) == 2
+    assert reads == ["sample.txt"]
+
+    # 显式推进 mtime，模拟标注文件被外部修改；size 相同也不能复用旧计数。
+    label.write_text("0 0.5 0.5 0.2 0.2\n1 0.1 0.1 0.1 0.1\n2 0.2 0.2 0.2 0.2\n", encoding="utf-8")
+    stat = label.stat()
+    next_mtime = stat.st_mtime_ns + 1_000
+    os.utime(label, ns=(next_mtime, next_mtime))
+
+    assert datasets.count_yolo_labels(label) == 3
+    assert reads == ["sample.txt", "sample.txt"]
+    snapshot = datasets.label_count_cache_stats_snapshot()
+    assert snapshot["hits"] == 1
+    assert snapshot["misses"] == 2
+    # 旧失效 key 留在有界缓存中，等待后续统一淘汰。
+    assert snapshot["entries"] == 2
+
+
+def test_count_yolo_labels_cache_evicts_when_limit_is_reached(tmp_path, monkeypatch):
+    import webui.services.datasets as datasets
+
+    first = tmp_path / "first.txt"
+    second = tmp_path / "second.txt"
+    first.write_text("0 0.5 0.5 0.2 0.2\n", encoding="utf-8")
+    second.write_text("0 0.5 0.5 0.2 0.2\n1 0.1 0.1 0.1 0.1\n", encoding="utf-8")
+    datasets.label_count_cache.clear()
+    datasets.label_count_cache_stats.update(hits=0, misses=0, evictions=0, entries=0)
+    monkeypatch.setattr(datasets, "LABEL_COUNT_CACHE_MAX_ENTRIES", 1)
+
+    assert datasets.count_yolo_labels(first) == 1
+    assert datasets.count_yolo_labels(second) == 2
+    # 超限后整表清空：第二个文件的当前 key 仍可命中。
+    assert datasets.count_yolo_labels(second) == 2
+    assert datasets.count_yolo_labels(first) == 1
+
+    snapshot = datasets.label_count_cache_stats_snapshot()
+    assert snapshot["hits"] == 1
+    assert snapshot["misses"] == 3
+    assert snapshot["evictions"] == 2
+    assert snapshot["entries"] == 1
+
+
 def test_image_record_parses_label_once_and_reports_label_state(monkeypatch, tmp_path):
     import webui.services.datasets as ds
 

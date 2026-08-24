@@ -102,6 +102,9 @@ predict_lock = threading.Lock()
 dataset_counts_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 dataset_counts_ttl = 3.0
 image_dims_cache: dict[tuple[str, float], tuple[int, int]] = {}
+# 轻量图片列表的标签行数缓存：以标签路径 + mtime_ns + size 作为失效依据。
+LABEL_COUNT_CACHE_MAX_ENTRIES = int(os.environ.get("YOLO_LABEL_COUNT_CACHE_MAX_ENTRIES", 8000))
+label_count_cache: dict[tuple[str, int, int], int] = {}
 # 数据集目录索引缓存：按 (profile, split) 缓存预排序图片文件名与标签状态，
 # 避免万级图片下列表请求反复全量扫描目录与 stat 标签文件；保存/上传/删除后显式失效。
 DATASET_INDEX_TTL_SECONDS = float(os.environ.get("YOLO_DATASET_INDEX_TTL_SECONDS", 10))
@@ -112,6 +115,7 @@ dataset_index_cache: dict[tuple[str, str], tuple[float, list[tuple[str, bool]]]]
 dataset_counts_cache_stats = {"hits": 0, "misses": 0, "expirations": 0, "entries": 0}
 dataset_index_cache_stats = {"hits": 0, "misses": 0, "expirations": 0, "invalidations": 0, "entries": 0}
 image_dims_cache_stats = {"hits": 0, "misses": 0, "evictions": 0, "entries": 0}
+label_count_cache_stats = {"hits": 0, "misses": 0, "evictions": 0, "entries": 0}
 thumbnail_cache_lock = threading.RLock()
 storage_quota_lock = threading.RLock()
 thumbnail_cache_stats = {"hits": 0, "misses": 0, "evictions": 0, "expirations": 0, "entries": 0, "bytes": 0, "hitRate": 0.0, "lastPrunedAt": 0.0}

@@ -166,9 +166,10 @@ def test_cache_stats_route_exposes_lifecycle_metrics():
     from webui.routes import cache as cache_route
 
     result = cache_route.cache_stats()
-    assert {"datasetCounts", "datasetIndex", "imageDimensions", "thumbnails", "storage"}.issubset(result)
+    assert {"datasetCounts", "datasetIndex", "imageDimensions", "labelCounts", "thumbnails", "storage"}.issubset(result)
     assert {"hits", "misses", "entries", "hitRate"}.issubset(result["datasetCounts"])
     assert {"hits", "misses", "entries", "hitRate"}.issubset(result["imageDimensions"])
+    assert {"hits", "misses", "entries", "hitRate"}.issubset(result["labelCounts"])
     assert {"hits", "misses", "entries", "bytes", "hitRate"}.issubset(result["thumbnails"])
 
 
