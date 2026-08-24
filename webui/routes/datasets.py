@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
@@ -80,7 +79,7 @@ async def upload_dataset(
     for label in labels:
         if label.filename:
             saved_label = await save_upload(label, label_dir, {".txt"})
-            label_path = Path(saved_label["path"])
+            label_path = label_dir / saved_label["name"]
             try:
                 validate_yolo_label_file(label_path, profile)
             except HTTPException:

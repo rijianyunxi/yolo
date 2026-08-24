@@ -314,3 +314,43 @@ def test_save_labels_succeeds_with_current_mtime(monkeypatch, tmp_path):
     )
     assert result["image"]["labelCount"] == 1
     assert label.read_text(encoding="utf-8").strip().startswith("0 0.200000")
+
+
+def test_files_route_cache_control_and_boundary(tmp_path, monkeypatch):
+    from webui.routes import files as files_route
+
+    datasets_dir = tmp_path / "datasets"
+    predict_dir = tmp_path / "runs" / "web_predict"
+    uploads_dir = tmp_path / "uploads"
+    datasets_dir.mkdir()
+    predict_dir.mkdir(parents=True)
+    uploads_dir.mkdir()
+    (datasets_dir / "img.jpg").write_bytes(b"jpeg-bytes")
+    (predict_dir / "result.jpg").write_bytes(b"jpeg-result")
+    (uploads_dir / "model.pt").write_bytes(b"model-bytes")
+
+    monkeypatch.setattr(files_route, "ROOT", tmp_path)
+    monkeypatch.setattr(files_route, "FILE_ROOTS", (datasets_dir, tmp_path / "runs", uploads_dir))
+    monkeypatch.setattr(files_route, "PREDICT_RUNS", predict_dir)
+
+    # 数据集图片 → public 缓存（可被浏览器缓存 1 小时）
+    resp = files_route.files("datasets/img.jpg")
+    assert resp.headers["cache-control"] == "public, max-age=3600"
+
+    # 预测结果 → no-store（可能被清理或覆盖，避免陈旧缓存）
+    resp2 = files_route.files("runs/web_predict/result.jpg")
+    assert resp2.headers["cache-control"] == "private, no-store"
+
+    # 上传/模型 → public 缓存
+    resp3 = files_route.files("uploads/model.pt")
+    assert resp3.headers["cache-control"] == "public, max-age=3600"
+
+    # 边界外路径 → 403
+    with pytest.raises(HTTPException) as exc:
+        files_route.files("../outside.txt")
+    assert exc.value.status_code == 403
+
+    # 不存在的文件 → 404
+    with pytest.raises(HTTPException) as exc2:
+        files_route.files("runs/not-found.jpg")
+    assert exc2.value.status_code == 404

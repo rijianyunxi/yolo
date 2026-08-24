@@ -535,9 +535,11 @@ async def save_upload(file: UploadFile, target_dir: Path, allowed_exts: set[str]
     if target.exists():
         target = target_dir / f"{target.stem}_{uuid.uuid4().hex[:6]}{target.suffix}"
 
+    # 先写同目录临时文件，校验通过后再原子替换到最终名，避免进程中断留下同名半文件。
+    temp_path = target_dir / f".{name}.{uuid.uuid4().hex}.tmp"
     total = 0
     try:
-        with target.open("wb") as out:
+        with temp_path.open("wb") as out:
             while True:
                 chunk = await file.read(_UPLOAD_CHUNK_BYTES)
                 if not chunk:
@@ -547,9 +549,14 @@ async def save_upload(file: UploadFile, target_dir: Path, allowed_exts: set[str]
                     raise HTTPException(status_code=413, detail=f"文件过大: {name}")
                 out.write(chunk)
         if suffix in IMAGE_EXTS:
-            _verify_image_content(target)
-    except HTTPException:
-        target.unlink(missing_ok=True)
+            _verify_image_content(temp_path)
+        os.replace(temp_path, target)
+    except (HTTPException, OSError):
+        temp_path.unlink(missing_ok=True)
         raise
 
-    return {"name": target.name, "path": str(target)}
+    try:
+        rel_path = target.relative_to(ROOT).as_posix()
+    except ValueError:
+        rel_path = str(target)
+    return {"name": target.name, "path": rel_path}

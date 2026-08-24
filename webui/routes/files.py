@@ -1,17 +1,35 @@
 from __future__ import annotations
 
-from typing import Any
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 
-from ..config import IMAGE_EXTS, ROOT, STATIC
+from ..config import IMAGE_EXTS, PREDICT_RUNS, ROOT, STATIC
 from ..services.datasets import ensure_thumbnail, safe_filename, split_paths
 from ..services.profiles import resolve_profile
 
 router = APIRouter()
 
 FILE_ROOTS = (ROOT / "datasets", ROOT / "runs", ROOT / "uploads", STATIC)
+
+
+def _resolve_served_file(file_path: str) -> Path:
+    """解析 /files/ 请求路径并做边界校验；只允许 FILE_ROOTS 下的真实文件。"""
+    path = (ROOT / file_path).resolve()
+    if not any(root.resolve() in path.parents or path == root.resolve() for root in FILE_ROOTS):
+        raise HTTPException(status_code=403, detail="无效的文件路径")
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail="文件不存在")
+    return path
+
+
+def _cache_control_for(path: Path) -> str:
+    """按文件所属根目录返回缓存策略：预测结果可被清理/覆盖，禁止长期缓存。"""
+    predict_root = PREDICT_RUNS.resolve(strict=False)
+    if predict_root == path or predict_root in path.parents:
+        return "private, no-store"
+    return "public, max-age=3600"
 
 
 @router.get("/")
@@ -33,12 +51,8 @@ def thumbnail(profile: str, split: str, filename: str) -> FileResponse:
 
 @router.get("/files/{file_path:path}")
 def files(file_path: str) -> FileResponse:
-    path = (ROOT / file_path).resolve()
-    if not any(root.resolve() in path.parents or path == root.resolve() for root in FILE_ROOTS):
-        raise HTTPException(status_code=403, detail="无效的文件路径")
-    if not path.exists() or not path.is_file():
-        raise HTTPException(status_code=404, detail="文件不存在")
-    return FileResponse(path)
+    path = _resolve_served_file(file_path)
+    return FileResponse(path, headers={"Cache-Control": _cache_control_for(path)})
 
 
 @router.get("/{path:path}")

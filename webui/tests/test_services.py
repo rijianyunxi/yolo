@@ -215,6 +215,22 @@ def test_save_upload_rejects_oversize_and_cleans_up(tmp_path, monkeypatch):
     assert not list(tmp_path.iterdir())
 
 
+def test_save_upload_writes_atomically_no_temp_leftover(tmp_path):
+    result = asyncio.run(save_upload(make_upload("cat.png", _png_bytes()), tmp_path, IMAGE_EXTS))
+    assert (tmp_path / result["name"]).exists()
+    # 原子替换后不应残留任何临时文件
+    assert not list(tmp_path.glob(".*.tmp"))
+
+
+def test_save_upload_path_is_root_relative(tmp_path, monkeypatch):
+    target_dir = tmp_path / "datasets" / "cat" / "images" / "train"
+    target_dir.mkdir(parents=True)
+    monkeypatch.setattr("webui.services.datasets.ROOT", tmp_path)
+    result = asyncio.run(save_upload(make_upload("cat.png", _png_bytes()), target_dir, IMAGE_EXTS))
+    assert not __import__("os").path.isabs(result["path"])
+    assert result["path"] == f"datasets/cat/images/train/{result['name']}"
+
+
 def test_save_yolo_labels_atomic_writes_expected_content(tmp_path):
     label_path = tmp_path / "labels" / "sample.txt"
     save_yolo_labels_atomic(label_path, ["0 0.500000 0.500000 0.200000 0.300000"])
