@@ -44,3 +44,4 @@ webui/thumbnails/
 # Playwright / E2E 临时产物
 webui/frontend/.e2e-dist/
 webui/frontend/test-results/
+webui/frontend/playwright-report/
