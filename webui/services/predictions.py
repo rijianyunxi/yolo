@@ -552,6 +552,8 @@ def retry_prediction_task(task_id: str) -> PredictionTask:
 
 
 def prediction_task_payload(task: PredictionTask, include_predictions: bool = False) -> dict[str, Any]:
+    # detections / images 是可变的共享列表，返回前必须拷贝，避免调用方拿到
+    # 与后台 worker 共享的引用，后续清理或状态流转时产生意外变更。
     payload: dict[str, Any] = {
         "id": task.id,
         "profile": task.profile,
@@ -573,12 +575,21 @@ def prediction_task_payload(task: PredictionTask, include_predictions: bool = Fa
         "modelSha256": task.model_sha256,
         "parentTaskId": task.parent_task_id,
         "conf": task.conf,
-        "detections": task.detections,
-        "images": task.images,
+        "detections": list(task.detections),
+        "images": list(task.images),
     }
     if include_predictions and task.status == "completed":
         payload["predictions"] = list(task.images)
     return payload
+
+
+def snapshot_prediction_task(task_id: str, include_predictions: bool = False) -> dict[str, Any] | None:
+    """在锁内读取任务并生成独立快照，避免读到半更新状态或共享可变列表。"""
+    with predict_tasks_lock:
+        task = predict_tasks.get(task_id)
+        if task is None:
+            return None
+        return prediction_task_payload(task, include_predictions=include_predictions)
 
 
 def _check_cancelled(task: PredictionTask) -> None:

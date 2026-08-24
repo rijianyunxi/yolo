@@ -22,6 +22,7 @@ from ..services.predictions import (
     prediction_stats,
     prediction_task_payload,
     remove_prediction_task,
+    snapshot_prediction_task,
     request_prediction_cancel,
     retry_prediction_task,
     file_sha256,
@@ -98,7 +99,7 @@ def predict(
         remove_prediction_task(task.id)
         upload_path.unlink(missing_ok=True)
         raise HTTPException(status_code=429, detail="预测队列已满（最多同时排队 5 个），请稍后再试")
-    return prediction_task_payload(task)
+    return snapshot_prediction_task(task.id) or prediction_task_payload(task)
 
 
 @router.get("/api/predictions/tasks")
@@ -110,22 +111,23 @@ def prediction_tasks_route() -> dict[str, Any]:
 
 @router.get("/api/predictions/tasks/{task_id}")
 def prediction_task(task_id: str) -> dict[str, Any]:
-    with predict_tasks_lock:
-        task = predict_tasks.get(task_id)
-    if task is None:
+    payload = snapshot_prediction_task(task_id, include_predictions=True)
+    if payload is None:
         raise HTTPException(status_code=404, detail="预测任务不存在")
-    return prediction_task_payload(task, include_predictions=True)
+    return payload
 
 
 @router.post("/api/predictions/tasks/{task_id}/cancel")
 def cancel_prediction_task(task_id: str, payload: CancelPredictionRequest | None = None) -> dict[str, Any]:
     task = request_prediction_cancel(task_id, (payload.reason if payload else "用户取消"))
-    return prediction_task_payload(task)
+    # 优先返回锁内快照；任务未注册（如测试 mock）时降级为直接序列化返回值。
+    return snapshot_prediction_task(task_id) or prediction_task_payload(task)
 
 
 @router.post("/api/predictions/tasks/{task_id}/retry")
 def retry_prediction(task_id: str) -> dict[str, Any]:
-    return prediction_task_payload(retry_prediction_task(task_id))
+    task = retry_prediction_task(task_id)
+    return snapshot_prediction_task(task.id) or prediction_task_payload(task)
 
 
 @router.get("/api/predictions")

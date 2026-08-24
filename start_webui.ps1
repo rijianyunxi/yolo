@@ -1,9 +1,22 @@
 ﻿$ErrorActionPreference = "Stop"
-Set-Location -LiteralPath "D:\work\yolo"
+$ProjectRoot = $PSScriptRoot
+if (-not $ProjectRoot) {
+    $ProjectRoot = (Get-Location).Path
+}
+Set-Location -LiteralPath $ProjectRoot
 
 $HostAddress = "127.0.0.1"
 $Port = 7860
-$Python = "D:\work\yolo\.venv\Scripts\python.exe"
+$VenvPython = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
+if (Test-Path -LiteralPath $VenvPython) {
+    $Python = $VenvPython
+} else {
+    $Fallback = Get-Command python -ErrorAction SilentlyContinue
+    if (-not $Fallback) {
+        throw "未找到 Python：请先创建 .venv 或确保 python 在 PATH 中"
+    }
+    $Python = $Fallback.Source
+}
 
 function Get-PortOwnerPids {
     param([int]$TargetPort)

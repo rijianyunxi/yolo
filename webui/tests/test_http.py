@@ -208,3 +208,29 @@ def test_http_prediction_filter_and_file_path_errors_are_json(client):
     missing_file = client.get("/files/runs/not-found.jpg")
     assert missing_file.status_code == 404
     assert missing_file.json()["detail"] == "文件不存在"
+
+
+def test_http_unknown_api_returns_json_404(client):
+    response = client.get("/api/no-such-endpoint")
+    assert response.status_code == 404
+    assert response.json()["detail"] == "接口不存在"
+
+
+def test_http_status_json_returns_plain_status_object(monkeypatch, client):
+    # status-json 直接返回 status() 对象，避免 json.dumps -> json.loads 往返
+    monkeypatch.setattr(
+        "webui.routes.status.dataset_counts",
+        lambda profile: {"count": 0, "images": 0, "labels": 0},
+    )
+    response = client.get("/api/status-json")
+    assert response.status_code == 200
+    body = response.json()
+    assert "profile" in body
+    assert "classes" in body
+    assert body["dataset"] == {"count": 0, "images": 0, "labels": 0}
+
+
+def test_http_response_includes_request_id_header(client):
+    response = client.get("/api/classes")
+    assert response.status_code == 200
+    assert response.headers.get("X-Request-Id")

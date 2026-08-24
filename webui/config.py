@@ -84,6 +84,9 @@ def refresh_profiles() -> None:
 
 
 MAX_PREDICT_QUEUE = 5
+# 进程内已加载模型缓存的上限（按模型路径+mtime+大小唯一）。
+# 超过上限时按最久未使用淘汰，避免多个大模型同时常驻内存。
+MODEL_CACHE_MAX_ENTRIES = int(os.environ.get("YOLO_MODEL_CACHE_MAX_ENTRIES", 3))
 MAX_PREDICT_LIMIT = 200
 MAX_PREDICT_TASK_HISTORY = 100
 MAX_TASK_LOGS_TO_KEEP = 50

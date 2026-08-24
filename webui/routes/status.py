@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import platform
 import shutil
 import sys
@@ -63,4 +62,6 @@ def classes(profile: str = DEFAULT_PROFILE) -> dict[str, Any]:
 
 @router.get("/api/status-json")
 def status_json() -> Any:
-    return json.loads(json.dumps(status(), ensure_ascii=False, default=str))
+    # 直接返回 status() 即可由 FastAPI 完成 JSON 序列化，避免多余的
+    # json.dumps -> json.loads 往返（旧实现仅在序列化失败时才有 default=str 兜底价值）。
+    return status()

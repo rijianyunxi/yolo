@@ -43,6 +43,8 @@ def files(file_path: str) -> FileResponse:
 
 @router.get("/{path:path}")
 def spa_fallback(path: str) -> FileResponse:
-    if path.startswith(("api/", "files/", "static/")):
+    if path.startswith("api/"):
+        raise HTTPException(status_code=404, detail="接口不存在")
+    if path.startswith(("files/", "static/")):
         raise HTTPException(status_code=404, detail="页面不存在")
     return FileResponse(STATIC / "index.html")

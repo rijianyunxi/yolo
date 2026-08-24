@@ -33,6 +33,7 @@ from webui.services.predictions import (
     prediction_task_payload,
     request_prediction_cancel,
     retry_prediction_task,
+    snapshot_prediction_task,
 )
 from webui.services.imported_models import import_model
 from webui.services.profiles import profile_config, resolve_profile
@@ -824,3 +825,86 @@ def test_storage_quota_protects_active_paths(tmp_path, monkeypatch):
     assert active.exists() and upload.exists()
     assert result["predictions"]["protectedEntries"] == 1
     assert result["uploads"]["protectedEntries"] == 1
+
+
+def test_prediction_task_payload_copies_mutable_lists():
+    task = PredictionTask(id="p-copy", profile=DEFAULT_PROFILE, upload_path=Path("t"))
+    task.detections = [{"classId": 1, "name": "cat", "confidence": 0.9}]
+    task.images = [{"name": "a.jpg", "path": "runs/x/a.jpg"}]
+    payload = prediction_task_payload(task)
+
+    # 返回的列表是拷贝，修改任务不会影响已生成的快照
+    task.detections.clear()
+    task.images.append({"name": "b.jpg", "path": "runs/x/b.jpg"})
+    assert payload["detections"] == [{"classId": 1, "name": "cat", "confidence": 0.9}]
+    assert payload["images"] == [{"name": "a.jpg", "path": "runs/x/a.jpg"}]
+
+    # 修改快照中的列表也不会影响任务
+    payload["detections"].append({"classId": 2})
+    payload["images"].clear()
+    assert task.detections == []
+    assert task.images == [
+        {"name": "a.jpg", "path": "runs/x/a.jpg"},
+        {"name": "b.jpg", "path": "runs/x/b.jpg"},
+    ]
+
+
+def test_snapshot_prediction_task_returns_none_for_missing_and_isolated_payload(monkeypatch):
+    import webui.services.predictions as service
+
+    task = PredictionTask(id="p-snap", profile=DEFAULT_PROFILE, upload_path=Path("t"))
+    task.status = "completed"
+    task.images = [{"name": "a.jpg", "path": "runs/x/a.jpg"}]
+    monkeypatch.setattr(service, "_write_history", lambda records: None)
+    with service.predict_tasks_lock:
+        service.predict_tasks[task.id] = task
+    try:
+        assert snapshot_prediction_task("missing-id") is None
+        payload = snapshot_prediction_task(task.id, include_predictions=True)
+        assert payload is not None
+        assert payload["id"] == "p-snap"
+        assert payload["predictions"] == task.images
+
+        # 快照与任务状态解耦：任务被清空后快照仍保留原数据
+        with service.predict_tasks_lock:
+            task.images = []
+            task.status = "failed"
+        assert payload["predictions"] == [{"name": "a.jpg", "path": "runs/x/a.jpg"}]
+        assert payload["status"] == "completed"
+    finally:
+        with service.predict_tasks_lock:
+            service.predict_tasks.pop(task.id, None)
+
+
+def test_model_cache_evicts_oldest_beyond_cap(monkeypatch, tmp_path):
+    import webui.services.models as models_service
+    from webui.config import MODEL_CACHE_MAX_ENTRIES, model_cache, model_cache_lock
+
+    class FakeModel:
+        def __init__(self, name: str):
+            self.name = name
+
+    monkeypatch.setattr(models_service, "_create_model", lambda path: FakeModel(path.name))
+
+    model_files = []
+    for index in range(MODEL_CACHE_MAX_ENTRIES + 2):
+        model_file = tmp_path / f"model_{index}.pt"
+        model_file.write_bytes(b"fake-weights")
+        model_files.append(model_file)
+
+    with model_cache_lock:
+        saved = dict(model_cache)
+        model_cache.clear()
+    try:
+        loaded = [models_service.load_model(path) for path in model_files]
+        with model_cache_lock:
+            assert len(model_cache) <= MODEL_CACHE_MAX_ENTRIES
+        # 最旧的 model_0 应被 LRU 淘汰
+        assert loaded[0].name == "model_0.pt"
+        with model_cache_lock:
+            keys = set(model_cache)
+        assert not any(key.startswith(str(model_files[0].resolve()) + "|") for key in keys)
+    finally:
+        with model_cache_lock:
+            model_cache.clear()
+            model_cache.update(saved)
