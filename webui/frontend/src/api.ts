@@ -3,26 +3,34 @@ const DEFAULT_TIMEOUT_MS = 60_000;
 /** API 非 2xx 响应抛出的错误，附带 HTTP 状态码供上层区分处理（如标注保存 409 冲突）。 */
 export class ApiError extends Error {
   readonly status: number;
+  readonly code?: string;
 
-  constructor(message: string, status: number) {
+  constructor(message: string, status: number, code?: string) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
+    this.code = code;
   }
 }
 
-/** 后端返回的错误字段兼容 detail / code / requestId。 */
-async function readError(response: Response): Promise<string> {
+/** 后端返回的错误字段优先读新格式 message，兼容旧格式 detail；同时提取 code。 */
+async function readError(response: Response): Promise<{ text: string; code?: string }> {
   try {
-    const json = (await response.json()) as { detail?: string; code?: string; requestId?: string };
-    if (json.detail) {
+    const json = (await response.json()) as {
+      detail?: string;
+      message?: string;
+      code?: string;
+      requestId?: string;
+    };
+    const text = json.message ?? json.detail;
+    if (text) {
       const extra =
         response.status >= 500 && json.requestId ? `（请求ID: ${json.requestId}）` : '';
-      return `${json.detail}${extra}`;
+      return { text: `${text}${extra}`, code: json.code };
     }
-    return response.statusText;
+    return { text: response.statusText };
   } catch {
-    return response.statusText;
+    return { text: response.statusText };
   }
 }
 
@@ -70,7 +78,10 @@ async function fetchJson<T>(
     }
     throw err;
   }
-  if (!response.ok) throw new ApiError(await readError(response), response.status);
+  if (!response.ok) {
+    const errInfo = await readError(response);
+    throw new ApiError(errInfo.text, response.status, errInfo.code);
+  }
   return response.json() as Promise<T>;
 }
 

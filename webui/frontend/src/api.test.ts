@@ -144,6 +144,24 @@ describe('api 错误归一化', () => {
     expect(error).toMatchObject({ name: 'ApiError', status: 409 });
     expect(error).toBeInstanceOf(ApiError);
   });
+  it('new format reads message and extracts code', async () => {
+    stubFetch().mockResolvedValue(
+      jsonResponse({ message: 'img not found', code: 'not_found', requestId: 'req-1' }, { status: 404 }),
+    );
+    const err = await api.get('/api/dataset/images').catch((e: unknown) => e);
+    expect(err).toMatchObject({ name: 'ApiError', status: 404, code: 'not_found' });
+    expect((err as Error).message).toBe('img not found');
+  });
+
+  it('legacy detail-only format has undefined code', async () => {
+    stubFetch().mockResolvedValue(
+      jsonResponse({ detail: 'param error' }, { status: 400 }),
+    );
+    const err2 = await api.get('/api/dataset/upload').catch((e: unknown) => e);
+    expect((err2 as Error).message).toBe('param error');
+    expect(err2).toMatchObject({ status: 400, code: undefined });
+  });
+
 });
 
 describe('api 超时与外部中止', () => {
