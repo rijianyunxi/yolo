@@ -247,6 +247,18 @@ def test_http_cache_stats_reachable_and_exposes_dataset_index(client):
     assert {"hits", "misses", "expirations", "invalidations", "entries", "hitRate"}.issubset(index_stats)
 
 
+def test_http_dataset_images_response_matches_schema(client):
+    from webui.schemas import DatasetImagesResponse
+
+    response = client.get("/api/dataset/images?profile=cat&split=train&page=1&page_size=3")
+    assert response.status_code == 200
+    body = response.json()
+    # FastAPI response_model 已在序列化时校验；此处再显式验证结构一致
+    parsed = DatasetImagesResponse(**body)
+    assert parsed.total == body["total"]
+    assert len(parsed.images) == len(body["images"])
+
+
 def test_http_dataset_images_uses_index_and_unknown_api_still_404(client):
     first = client.get("/api/dataset/images?profile=cat&split=train&page=1&page_size=3")
     assert first.status_code == 200

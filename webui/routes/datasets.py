@@ -5,6 +5,8 @@ from typing import Any
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
+from ..schemas import DatasetImagesResponse, SaveLabelsResponse, UploadResponse
+
 from ..config import DEFAULT_PROFILE, IMAGE_EXTS, VALID_SPLITS
 from ..services.dataset_check import load_dataset_report
 from ..services.datasets import (
@@ -56,7 +58,7 @@ class BatchDeleteImagesRequest(BaseModel):
     filenames: list[str] = Field(default_factory=list)
 
 
-@router.post("/api/dataset/upload")
+@router.post("/api/dataset/upload", response_model=UploadResponse)
 async def upload_dataset(
     profile: str = Form(DEFAULT_PROFILE),
     split: str = Form(...),
@@ -97,7 +99,7 @@ async def upload_dataset(
     }
 
 
-@router.get("/api/dataset/images")
+@router.get("/api/dataset/images", response_model=DatasetImagesResponse)
 def dataset_images(profile: str = DEFAULT_PROFILE, split: str = "train", page: int = 1, page_size: int = 60, label: str = "all") -> dict[str, Any]:
     profile = resolve_profile(profile)
     images_dir, _ = split_paths(profile, split)
@@ -140,7 +142,7 @@ def dataset_images(profile: str = DEFAULT_PROFILE, split: str = "train", page: i
     }
 
 
-@router.post("/api/dataset/labels")
+@router.post("/api/dataset/labels", response_model=SaveLabelsResponse)
 def save_dataset_labels(payload: SaveLabelsRequest) -> dict[str, Any]:
     resolve_profile(payload.profile)
     images_dir, labels_dir = split_paths(payload.profile, payload.split)
