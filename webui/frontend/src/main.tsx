@@ -1225,16 +1225,6 @@ function App() {
         </nav>
 
         <div className="sidebar-footer">
-          <label className="sidebar-profile">
-            <span>全局数据集配置</span>
-            <select value={datasetProfile} onChange={(event) => changeDatasetProfile(event.target.value)}>
-              {profileOptions.map((profile) => (
-                <option key={profile.id} value={profile.id}>
-                  {profile.title}（{profile.id}）
-                </option>
-              ))}
-            </select>
-          </label>
           <div className="sidebar-actions">
             <button type="button" className="btn" onClick={() => void refreshAll()}>
               <RefreshCw size={14} />
@@ -1808,10 +1798,22 @@ function App() {
                   <h2>数据集配置管理</h2>
                   <p className="annotation-help">管理 YOLO 数据集配置（新增 / 修改 / 删除），并可查看每个配置已训练好的模型。</p>
                 </div>
-                <button type="button" className="primary" onClick={openCreateForm}>
-                  <Plus size={16} />
-                  新增配置
-                </button>
+                <div className="inline-controls">
+                  <label className="inline-control">
+                    <span>当前配置</span>
+                    <select value={datasetProfile} onChange={(event) => changeDatasetProfile(event.target.value)}>
+                      {profileOptions.map((profile) => (
+                        <option key={profile.id} value={profile.id}>
+                          {profile.title}（{profile.id}）
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <button type="button" className="primary" onClick={openCreateForm}>
+                    <Plus size={16} />
+                    新增配置
+                  </button>
+                </div>
               </div>
               <p className="help">
                 {profilesMessage || '共 ' + profileList.length + ' 个数据集配置，当前使用：' + (currentProfile?.title || datasetProfile) + '。'}

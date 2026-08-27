@@ -759,11 +759,13 @@ position: relative;
   overflow: hidden;
 }
 
+.annotation-sidebar > * {
+  flex-shrink: 0;
+}
+
 .annotation-image-list {
-  display: grid;
-  align-content: start;
-  gap: 8px;
-  flex: 1;
+  display: block;
+  flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
   padding-right: 4px;
