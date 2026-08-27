@@ -1812,12 +1812,12 @@ function App() {
           <section className="page-stack">
             <section className="panel">
               <PanelHead
-                title={<>训练模型 — {profileList.find((item) => item.id === modelViewProfile)?.title || modelViewProfile}</>}
-                  description={`存放于 runs/${modelViewProfile}_yolo11n*/weights/best.pt 的已训练模型。`}
+                title="数据集配置管理"
+                description="管理 YOLO 数据集配置（新增 / 修改 / 删除），并可查看每个配置已训练好的模型。"
                 actions={
-                  <button type="button" className="btn" onClick={() => setModelViewProfile(null)}>
-                    <X size={15} />
-                    关闭
+                  <button type="button" className="primary" onClick={openCreateForm}>
+                    <Plus size={16} />
+                    新增配置
                   </button>
                 }
               />

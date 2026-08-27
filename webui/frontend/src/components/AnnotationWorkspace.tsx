@@ -116,22 +116,24 @@ export function AnnotationWorkspace({
           <h2>待标注图片</h2>
           <span className="pill">{annotationTotal} 张</span>
         </div>
+        <div className="annotation-filters">
         <select aria-label="标注数据集分组" value={annotateSplit} onChange={(event) => onSplitChange(event.target.value as Split)}>
           <option value="train">训练集 train</option>
           <option value="val">验证集 val</option>
           <option value="test">测试集 test</option>
         </select>
+        <select aria-label="标注状态筛选" value={annotationLabelFilter} onChange={(event) => onLabelFilterChange(event.target.value as LabelFilter)}>
+          <option value="all">全部图片</option>
+          <option value="unlabeled">未标注</option>
+          <option value="labeled">已标注</option>
+        </select>
+        </div>
         <select aria-label="标注数据集配置" value={annotateProfile} onChange={(event) => onProfileChange(event.target.value)}>
           {profileOptions.map((profile) => (
             <option key={profile.id} value={profile.id}>
               {profile.title}（{profile.id}）
             </option>
           ))}
-        </select>
-        <select aria-label="标注状态筛选" value={annotationLabelFilter} onChange={(event) => onLabelFilterChange(event.target.value as LabelFilter)}>
-          <option value="all">全部图片</option>
-          <option value="unlabeled">未标注</option>
-          <option value="labeled">已标注</option>
         </select>
         {annotationStatusLoading ? <p className="request-state" aria-live="polite">正在刷新数据集统计...</p> : null}
         {annotationStatusError ? (

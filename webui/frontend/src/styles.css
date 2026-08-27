@@ -760,6 +760,12 @@ position: relative;
   overflow: hidden;
 }
 
+.annotation-filters {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  flex-shrink: 0;
+}
 .annotation-sidebar > * {
   flex-shrink: 0;
 }
@@ -896,6 +902,8 @@ position: relative;
   font-size: 14px;
   cursor: pointer;
   outline: none;
+  min-width: 96px;
+  max-width: 220px;
 }
 
 
