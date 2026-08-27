@@ -114,7 +114,7 @@ function App() {
   const [savingAnnotation, setSavingAnnotation] = useState(false);
   const [annotationStatusLoading, setAnnotationStatusLoading] = useState(false);
   const [annotationStatusError, setAnnotationStatusError] = useState('');
-  const [saveDialog, setSaveDialog] = useState<{ kind: 'success' | 'error'; message: string; actionLabel?: string; onAction?: () => void } | null>(null);
+  const [saveDialog, setSaveDialog] = useState<{ kind: 'success' | 'error'; message: string; actionLabel?: string; onAction?: () => void; autoClose?: boolean } | null>(null);
   const [predictionMessage, setPredictionMessage] = useState('');
   const [predictionResultsLoading, setPredictionResultsLoading] = useState(false);
   const [predictionResultsError, setPredictionResultsError] = useState('');
@@ -189,6 +189,7 @@ function App() {
     annotationImagesError,
     loadAnnotationImages,
     invalidateImageCaches,
+    replaceImage,
   } = datasetImagePages;
 
   const task = liveTask ?? status?.task ?? null;
@@ -785,23 +786,22 @@ function App() {
     if (!response.classes.some((item) => item.id === selectedClassId)) setSelectedClassId(response.classes[0]?.id ?? 0);
     const images = response.images;
     const sameContext = Boolean(selectedImage && selectedImage.profile === annotateProfile && selectedImage.split === annotateSplit);
-    const match = selectedImage ? images.find((item) => item.name === selectedImage.name) : null;
-    const next = match || (sameContext && selectedImage && images.some((item) => item.name === selectedImage.name) ? selectedImage : images[0] || null);
-    if (!match && (!sameContext || !images.some((item) => item.name === selectedImage?.name))) {
-      setSelectedImage(next);
-      annotationBoxesRef.current = next?.boxes || [];
-      setAnnotationBoxes(next?.boxes || []);
-      resetAnnotationHistory(next?.boxes || []);
-      setAnnotationDirty(false);
-      setSelectedBoxIndex(null);
-    } else if (match && selectedImage?.name !== match.name) {
-      setSelectedImage(match);
-      annotationBoxesRef.current = match.boxes || [];
-      setAnnotationBoxes(match.boxes || []);
-      resetAnnotationHistory(match.boxes || []);
-      setAnnotationDirty(false);
-      setSelectedBoxIndex(null);
+    const matchByName = selectedImage ? images.find((item) => item.name === selectedImage.name) : null;
+    if (matchByName) {
+      // 当前选中图片仍在响应列表中：保留 selectedImage（含本地最新 boxes），不强制用 match 覆盖
+      return;
     }
+    if (selectedImage && sameContext) {
+      // 列表里没有当前选中（被筛选掉或换页）：保留 selectedImage 不变，由调用方决定后续
+      return;
+    }
+    const fallback = images[0] || null;
+    setSelectedImage(fallback);
+    annotationBoxesRef.current = fallback?.boxes || [];
+    setAnnotationBoxes(fallback?.boxes || []);
+    resetAnnotationHistory(fallback?.boxes || []);
+    setAnnotationDirty(false);
+    setSelectedBoxIndex(null);
   }
 
   async function refreshDatasetReport() {
@@ -994,17 +994,19 @@ function App() {
       setAnnotationDirty(false);
       const saveMessage = `已保存 ${updated.labelCount} 个标注框。`;
       setAnnotationMessage(saveMessage);
-      setSaveDialog({ kind: 'success', message: saveMessage });
+      setSaveDialog({ kind: 'success', message: saveMessage, autoClose: true });
       updateCachedAnnotationImage(updated);
       setSelectedBoxIndex(null);
       await refreshStatus();
       if (annotationLabelFilter === 'unlabeled' && updated.hasLabel) {
         const refreshed = await loadAnnotationImages(annotateSplit, annotationPage, annotationLabelFilter, true);
         if (moveNext) {
-          const target = refreshed[currentIndex] || (annotationPage < annotationPageCount
-            ? (await loadAnnotationImages(annotateSplit, annotationPage + 1, annotationLabelFilter))[0]
-            : undefined);
-          if (target) selectAnnotationImage(target, true);
+          if (refreshed.length) {
+            selectAnnotationImage(refreshed[0], true);
+          } else if (annotationPage < annotationPageCount) {
+            const nextPageImages = await loadAnnotationImages(annotateSplit, annotationPage + 1, annotationLabelFilter);
+            if (nextPageImages.length) selectAnnotationImage(nextPageImages[0], true);
+          }
         }
       } else if (moveNext) {
         await goToAdjacentAnnotation(1);
@@ -1023,7 +1025,7 @@ function App() {
                 void reloadCurrentAnnotation();
               },
             }
-          : { kind: 'error', message: `保存失败：${saveMessage}` },
+          : { kind: 'error', message: `保存失败：${saveMessage}`, autoClose: true },
       );
     } finally {
       setSavingAnnotation(false);
@@ -1049,20 +1051,7 @@ function App() {
   }
 
   function updateCachedAnnotationImage(updated: DatasetImage) {
-    const updatePage = <T extends DatasetImagePage | AnnotationImagePage>(page: T): T => ({
-      ...page,
-      images: page.images.map((item) => item.name === updated.name && item.split === updated.split ? updated : item),
-    } as T);
-    for (const key of managedImagesCache.current.keys()) {
-      const page = managedImagesCache.current.peek(key);
-      if (page && page.images.some((item) => item.name === updated.name && item.split === updated.split)) managedImagesCache.current.set(key, updatePage(page));
-    }
-    for (const key of annotationCache.current.keys()) {
-      const page = annotationCache.current.peek(key);
-      if (page && page.images.some((item) => item.name === updated.name && item.split === updated.split)) annotationCache.current.set(key, updatePage(page));
-    }
-    setManagedImages((current) => current.map((item) => item.name === updated.name && item.split === updated.split ? updated : item));
-    setAnnotationImages((current) => current.map((item) => item.name === updated.name && item.split === updated.split ? updated : item));
+    replaceImage(updated);
   }
 
   async function predict(form: FormData) {

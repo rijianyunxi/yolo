@@ -172,4 +172,52 @@ describe('useDatasetImagePages', () => {
     rerender({ ...options, annotateProfile: 'safety' });
     expect(cache.peek('old|train|all|1')).toBeUndefined();
   });
+
+  it('replaceImage updates annotation cache and state in place', async () => {
+    const cache = new TtlLruCache<string, AnnotationImagePage>({ ttlMs: 30_000, maxEntries: 4 });
+    const base = annotationPage('cat', 'train', ['a.jpg', 'b.jpg']);
+    const options = makeOptions({ annotationsActive: true, annotationCache: { current: cache } });
+    const { result } = renderHook((opts: Parameters<typeof useDatasetImagePages>[0]) => useDatasetImagePages(opts), {
+      initialProps: options,
+    });
+    // 等初始 effect flush（首次挂载的 invalidate 会清空预填 cache）
+    await act(async () => {});
+    cache.set('cat|train|all|1', base);
+    act(() => {
+      result.current.setAnnotationImages(base.images);
+    });
+    const updated: DatasetImage = {
+      ...base.images[0],
+      name: 'a.jpg',
+      hasLabel: true,
+      labelCount: 3,
+      boxes: [{ classId: 0, x: 0.1, y: 0.1, width: 0.2, height: 0.2 }],
+    };
+    act(() => {
+      result.current.replaceImage(updated);
+    });
+    const cached = cache.peek('cat|train|all|1');
+    expect(cached?.images.find((i) => i.name === 'a.jpg')).toMatchObject({
+      name: 'a.jpg',
+      hasLabel: true,
+      labelCount: 3,
+    });
+    expect(result.current.annotationImages.find((i) => i.name === 'a.jpg')).toMatchObject({
+      hasLabel: true,
+      labelCount: 3,
+    });
+    expect(result.current.managedImages).toEqual([]);
+  });
+
+  it('replaceImage scaffolds cache and state', () => {
+    const options = makeOptions({ photosActive: true, annotationsActive: true });
+    const { result } = renderHook((opts: Parameters<typeof useDatasetImagePages>[0]) => useDatasetImagePages(opts), {
+      initialProps: options,
+    });
+    act(() => {
+      result.current.replaceImage({} as DatasetImage);
+    });
+    expect(options.managedImagesCache.current.stats().entries).toBe(0);
+    expect(options.annotationCache.current.stats().entries).toBe(0);
+  });
 });

@@ -209,6 +209,25 @@ export function useDatasetImagePages(options: DatasetImagePagesOptions) {
     annotationImagesAbort.current?.abort();
   }, []);
 
+
+  function replaceImage(updated: DatasetImage) {
+    const updatePage = <T extends DatasetImagePage | AnnotationImagePage>(page: T): T => ({
+      ...page,
+      images: page.images.map((item) => item.name === updated.name && item.split === updated.split ? updated : item),
+    } as T);
+    for (const cache of [optionsRef.current.managedImagesCache.current, optionsRef.current.annotationCache.current]) {
+      for (const key of cache.keys()) {
+        const page = cache.peek(key);
+        if (page && page.images.some((item) => item.name === updated.name && item.split === updated.split)) {
+          cache.set(key, updatePage(page));
+        }
+      }
+    }
+    optionsRef.current.refreshCacheStats();
+    setManagedImages((current) => current.map((item) => item.name === updated.name && item.split === updated.split ? updated : item));
+    setAnnotationImages((current) => current.map((item) => item.name === updated.name && item.split === updated.split ? updated : item));
+  }
+
   return {
     managedImages,
     setManagedImages,
@@ -229,6 +248,7 @@ export function useDatasetImagePages(options: DatasetImagePagesOptions) {
     setAnnotationImagesError,
     loadAnnotationImages,
     invalidateImageCaches,
+    replaceImage,
   };
 }
 
