@@ -72,6 +72,24 @@ import { useTaskPolling } from './hooks/useTaskPolling';
 import { useDatasetImagePages } from './hooks/useDatasetImagePages';
 import { TtlLruCache } from './utils/ttlCache';
 
+type PanelHeadProps = {
+  title: React.ReactNode;
+  description?: React.ReactNode;
+  actions?: React.ReactNode;
+};
+
+function PanelHead({ title, description, actions }: PanelHeadProps) {
+  return (
+    <div className="panel-head">
+      <div>
+        {typeof title === "string" ? <h2>{title}</h2> : title}
+        {description ? <p className="annotation-help">{description}</p> : null}
+      </div>
+      {actions ? <div className="inline-controls">{actions}</div> : null}
+    </div>
+  );
+}
+
 function App() {
   const [menu, setMenu] = useState<MenuKey>(() => menuFromLocation());
   const [status, setStatus] = useState<Status | null>(null);
@@ -1268,13 +1286,11 @@ function App() {
             </section>
 
             <section className="panel dataset-context">
-              <div className="panel-head">
-                <div>
-                  <h2>当前数据集配置</h2>
-                  <p className="annotation-help">导入、训练、预测默认使用这里选中的配置；在线标注可以在页面内单独切换。</p>
-                </div>
-                <span className="pill">{datasetProfile}</span>
-              </div>
+              <PanelHead
+                title="当前数据集配置"
+                description="导入、训练、预测默认使用这里选中的配置；在线标注可以在页面内单独切换。"
+                actions={<span className="pill">{datasetProfile}</span>}
+              />
               <div className="dataset-summary-grid">
                 <div>
                   <span>配置名称</span>
@@ -1305,13 +1321,11 @@ function App() {
             </section>
 
             <section className="panel cache-diagnostics">
-              <div className="panel-head">
-                <div>
-                  <h2>缓存诊断</h2>
-                  <p className="annotation-help">页面缓存采用 TTL + LRU，切换数据集或筛选条件后会自动隔离并清理。</p>
-                </div>
-                <button type="button" className="btn" onClick={refreshCacheStats}>刷新统计</button>
-              </div>
+              <PanelHead
+                title="缓存诊断"
+                description="页面缓存采用 TTL + LRU，切换数据集或筛选条件后会自动隔离并清理。"
+                actions={<button type="button" className="btn" onClick={refreshCacheStats}>刷新统计</button>}
+              />
               <div className="kv-grid">
                 {([
                   ['图片列表', cacheStats.images],
@@ -1328,13 +1342,11 @@ function App() {
             </section>
 
             <section className="panel storage-diagnostics">
-              <div className="panel-head">
-                <div>
-                  <h2>磁盘配额</h2>
-                  <p className="annotation-help">预测结果与上传暂存目录会按保留时间和容量自动清理，活动任务文件不会被清理。</p>
-                </div>
-                <button type="button" className="btn" disabled={storageStatsLoading} onClick={() => void refreshStorageStats(true)}>{storageStatsLoading ? '清理中...' : '立即清理'}</button>
-              </div>
+              <PanelHead
+                title="磁盘配额"
+                description="预测结果与上传暂存目录会按保留时间和容量自动清理，活动任务文件不会被清理。"
+                actions={<button type="button" className="btn" disabled={storageStatsLoading} onClick={() => void refreshStorageStats(true)}>{storageStatsLoading ? "清理中..." : "立即清理"}</button>}
+              />
               {storageStats ? (
                 <div className="kv-grid">
                   {(['predictions', 'uploads'] as const).map((key) => {
@@ -1352,10 +1364,10 @@ function App() {
             </section>
 
             <section className="panel">
-              <div className="panel-head">
-                <h2>运行环境</h2>
-                <span className="pill">{status?.python ?? '加载中'}</span>
-              </div>
+              <PanelHead
+                title="运行环境"
+                actions={<span className="pill">{status?.python ?? '加载中'}</span>}
+              />
               <div className="kv-grid">
                 <div>
                   <span>Python</span>
@@ -1385,10 +1397,10 @@ function App() {
             </section>
 
             <section className="panel">
-              <div className="panel-head">
-                <h2>数据集状态</h2>
-                <span className="pill">{dataset?.ready ? '可开始训练' : '尚未满足训练条件'}</span>
-              </div>
+              <PanelHead
+                title="数据集状态"
+                actions={<span className="pill">{dataset?.ready ? '可开始训练' : '尚未满足训练条件'}</span>}
+              />
               {datasetReport ? (
                 <>
                   <div className={`check-summary ${datasetReport.ready ? 'success' : 'danger'}`}>
@@ -1428,13 +1440,11 @@ function App() {
         {menu === 'dataset' ? (
           <section className="page-stack">
             <section className="panel dataset-context compact-context">
-              <div className="panel-head">
-                <div>
-                  <h2>正在管理：{currentProfile?.title || datasetProfile}</h2>
-                  <p className="annotation-help">上传的图片和标签会进入此配置对应的数据集目录。</p>
-                </div>
-                <span className="pill">{datasetProfile}</span>
-              </div>
+              <PanelHead
+                title={<>正在管理：{currentProfile?.title || datasetProfile}</>}
+                description="上传的图片和标签会进入此配置对应的数据集目录。"
+                actions={<span className="pill">{datasetProfile}</span>}
+              />
               <div className="class-chip-list">
                 {currentClasses.map((item) => (
                   <span className="class-chip" key={item.id}>
@@ -1447,10 +1457,10 @@ function App() {
             </section>
 
             <section className="panel">
-              <div className="panel-head">
-                <h2>导入训练数据</h2>
-                <span className="pill">YOLO 格式</span>
-              </div>
+              <PanelHead
+                title="导入训练数据"
+                actions={<span className="pill">YOLO 格式</span>}
+              />
               <form
                 className="form-grid"
                 onSubmit={(event) => {
@@ -1494,13 +1504,15 @@ function App() {
             </section>
 
             <section className="panel">
-              <div className="panel-head">
-                <h2>数据集检查</h2>
-                <button type="button" className="btn" disabled={busy} onClick={() => void runDatasetCheck()}>
-                  <ListChecks size={16} />
-                  检查数据集
-                </button>
-              </div>
+              <PanelHead
+                title="数据集检查"
+                actions={
+                  <button type="button" className="btn" disabled={busy} onClick={() => void runDatasetCheck()}>
+                    <ListChecks size={16} />
+                    检查数据集
+                  </button>
+                }
+              />
               <table className="table">
                 <thead>
                   <tr>
@@ -1520,15 +1532,16 @@ function App() {
         {menu === 'photos' ? (
           <section className="page-stack">
             <section className="panel">
-              <div className="panel-head">
-                <h2>训练图片管理</h2>
-                <div className="inline-controls">
-                  <select value={photoSplit} onChange={(event) => { setPhotoPage(1); setPhotoSplit(event.target.value as Split); }}>
-                    <option value="train">训练集 train</option>
-                    <option value="val">验证集 val</option>
-                    <option value="test">测试集 test</option>
-                  </select>
-<select
+              <PanelHead
+                title="训练图片管理"
+                actions={
+                  <>
+                    <select value={photoSplit} onChange={(event) => { setPhotoPage(1); setPhotoSplit(event.target.value as Split); }}>
+                      <option value="train">训练集 train</option>
+                      <option value="val">验证集 val</option>
+                      <option value="test">测试集 test</option>
+                    </select>
+                    <select
                       value={photoLabelFilter}
                       onChange={(event) => {
                         setPhotoPage(1);
@@ -1539,11 +1552,11 @@ function App() {
                       <option value="unlabeled">未标注</option>
                       <option value="labeled">已标注</option>
                     </select>
-                  <button type="button" className="btn" onClick={() => void loadManagedImages(photoSplit, photoPage, true)}>
-                    <RefreshCw size={16} />
-                    刷新列表
-                  </button>
-<button
+                    <button type="button" className="btn" onClick={() => void loadManagedImages(photoSplit, photoPage, true)}>
+                      <RefreshCw size={16} />
+                      刷新列表
+                    </button>
+                    <button
                       type="button"
                       className="btn danger"
                       disabled={!selectedPhotoNames.length}
@@ -1552,8 +1565,9 @@ function App() {
                       <Trash2 size={16} />
                       批量删除{selectedPhotoNames.length ? ` (${selectedPhotoNames.length})` : ''}
                     </button>
-                </div>
-              </div>
+                  </>
+                }
+              />
 
               <form
                 className="photo-upload-row"
@@ -1588,18 +1602,22 @@ function App() {
             </section>
 
             <section className="panel">
-              <div className="panel-head">
-                <h2>{splitName(photoSplit)}</h2>
-                <span className="pill">{photoTotal} 张图片</span>
-<label className="switch">
-                    <input
-                      type="checkbox"
-                      checked={managedImages.length > 0 && managedImages.every((item) => selectedPhotoNames.includes(item.name))}
-                      onChange={toggleSelectAllPhotos}
-                    />
-                    全选本页
-                  </label>
-              </div>
+              <PanelHead
+                title={splitName(photoSplit)}
+                actions={
+                  <>
+                    <span className="pill">{photoTotal} 张图片</span>
+                    <label className="switch">
+                      <input
+                        type="checkbox"
+                        checked={managedImages.length > 0 && managedImages.every((item) => selectedPhotoNames.includes(item.name))}
+                        onChange={toggleSelectAllPhotos}
+                      />
+                      全选本页
+                    </label>
+                  </>
+                }
+              />
               <div className="photo-grid">
                 {managedImages.length ? (
                   managedImages.map((image) => (
@@ -1793,28 +1811,16 @@ function App() {
         {menu === 'profiles' ? (
           <section className="page-stack">
             <section className="panel">
-              <div className="panel-head">
-                <div>
-                  <h2>数据集配置管理</h2>
-                  <p className="annotation-help">管理 YOLO 数据集配置（新增 / 修改 / 删除），并可查看每个配置已训练好的模型。</p>
-                </div>
-                <div className="inline-controls">
-                  <label className="inline-control">
-                    <span>当前配置</span>
-                    <select value={datasetProfile} onChange={(event) => changeDatasetProfile(event.target.value)}>
-                      {profileOptions.map((profile) => (
-                        <option key={profile.id} value={profile.id}>
-                          {profile.title}（{profile.id}）
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <button type="button" className="primary" onClick={openCreateForm}>
-                    <Plus size={16} />
-                    新增配置
+              <PanelHead
+                title={<>训练模型 — {profileList.find((item) => item.id === modelViewProfile)?.title || modelViewProfile}</>}
+                  description={`存放于 runs/${modelViewProfile}_yolo11n*/weights/best.pt 的已训练模型。`}
+                actions={
+                  <button type="button" className="btn" onClick={() => setModelViewProfile(null)}>
+                    <X size={15} />
+                    关闭
                   </button>
-                </div>
-              </div>
+                }
+              />
               <p className="help">
                 {profilesMessage || '共 ' + profileList.length + ' 个数据集配置，当前使用：' + (currentProfile?.title || datasetProfile) + '。'}
               </p>
@@ -2026,23 +2032,27 @@ function App() {
         {menu === 'logs' ? (
           <section className="page-stack">
             <section className="panel">
-              <div className="panel-head">
-                <h2>任务日志</h2>
-                <label className="switch">
-                  <input type="checkbox" checked={logAuto} onChange={(event) => setLogAuto(event.target.checked)} />
-                  <span>自动刷新</span>
-                </label>
-              </div>
+              <PanelHead
+                title="任务日志"
+                actions={
+                  <label className="switch">
+                    <input type="checkbox" checked={logAuto} onChange={(event) => setLogAuto(event.target.checked)} />
+                    <span>自动刷新</span>
+                  </label>
+                }
+              />
               <pre className="log-box">{log?.log || '当前没有任务日志。'}</pre>
             </section>
             <section className="panel">
-              <div className="panel-head">
-                <h2>当前任务</h2>
-                <button type="button" className="btn" onClick={() => void refreshLog()}>
-                  <RefreshCw size={16} />
-                  刷新日志
-                </button>
-              </div>
+              <PanelHead
+                title="当前任务"
+                actions={
+                  <button type="button" className="btn" onClick={() => void refreshLog()}>
+                    <RefreshCw size={16} />
+                    刷新日志
+                  </button>
+                }
+              />
               <div className="kv-grid compact">
                 <div>
                   <span>任务类型</span>
@@ -2063,14 +2073,18 @@ function App() {
               </div>
             </section>
             <section className="panel">
-              <div className="panel-head">
-                <h2>任务历史</h2>
-                <span className="pill">{taskHistory.length} 条</span>
-                <button type="button" className="btn" onClick={() => void refreshTaskHistory()}>
-                  <RefreshCw size={16} />
-                  刷新历史
-                </button>
-              </div>
+              <PanelHead
+                title="任务历史"
+                actions={
+                  <>
+                    <span className="pill">{taskHistory.length} 条</span>
+                    <button type="button" className="btn" onClick={() => void refreshTaskHistory()}>
+                      <RefreshCw size={16} />
+                      刷新历史
+                    </button>
+                  </>
+                }
+              />
               <table className="table">
                 <thead>
                   <tr>
