@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+﻿import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
   Activity,
@@ -69,6 +69,7 @@ import { StatCard } from './components/StatCard';
 import { PredictionPanel } from './components/PredictionPanel';
 import { TrainingPanel } from './components/TrainingPanel';
 import { useTaskPolling } from './hooks/useTaskPolling';
+import { useDatasetImagePages } from './hooks/useDatasetImagePages';
 import { TtlLruCache } from './utils/ttlCache';
 
 function App() {
@@ -89,23 +90,13 @@ function App() {
   const [photoSplit, setPhotoSplit] = useState<Split>('train');
   const [annotateSplit, setAnnotateSplit] = useState<Split>('train');
   const [annotateProfile, setAnnotateProfile] = useState('');
-  const [managedImages, setManagedImages] = useState<DatasetImage[]>([]);
-  const [photoPage, setPhotoPage] = useState(1);
-  const [photoTotal, setPhotoTotal] = useState(0);
-  const [photoPageCount, setPhotoPageCount] = useState(0);
     const [photoLabelFilter, setPhotoLabelFilter] = useState<'all' | 'labeled' | 'unlabeled'>('all');
     const [selectedPhotoNames, setSelectedPhotoNames] = useState<string[]>([]);
-  const [annotationImages, setAnnotationImages] = useState<DatasetImage[]>([]);
-  const [annotationPage, setAnnotationPage] = useState(1);
-  const [annotationTotal, setAnnotationTotal] = useState(0);
-  const [annotationPageCount, setAnnotationPageCount] = useState(0);
   const [annotationLabelFilter, setAnnotationLabelFilter] = useState<'all' | 'labeled' | 'unlabeled'>('all');
   const managedImagesCache = useRef(new TtlLruCache<string, DatasetImagePage>({ ttlMs: 30_000, maxEntries: 24 }));
   const annotationCache = useRef(new TtlLruCache<string, AnnotationImagePage>({ ttlMs: 30_000, maxEntries: 24 }));
   const predictionResultsCache = useRef(new TtlLruCache<string, { predictions: PredictionItem[]; stats: PredictionStats }>({ ttlMs: 10_000, maxEntries: 12 }));
   const [cacheStatsVersion, setCacheStatsVersion] = useState(0);
-  const managedImagesRequestId = useRef(0);
-  const annotationImagesRequestId = useRef(0);
   const [selectedImage, setSelectedImage] = useState<DatasetImage | null>(null);
   const [annotationBoxes, setAnnotationBoxes] = useState<Box[]>([]);
   const annotationBoxesRef = useRef<Box[]>([]);
@@ -121,8 +112,6 @@ function App() {
   const [photoMessage, setPhotoMessage] = useState('');
   const [annotationMessage, setAnnotationMessage] = useState('');
   const [savingAnnotation, setSavingAnnotation] = useState(false);
-  const [annotationImagesLoading, setAnnotationImagesLoading] = useState(false);
-  const [annotationImagesError, setAnnotationImagesError] = useState('');
   const [annotationStatusLoading, setAnnotationStatusLoading] = useState(false);
   const [annotationStatusError, setAnnotationStatusError] = useState('');
   const [saveDialog, setSaveDialog] = useState<{ kind: 'success' | 'error'; message: string; actionLabel?: string; onAction?: () => void } | null>(null);
@@ -170,7 +159,37 @@ function App() {
   const predictionResultsAbort = useRef<AbortController | null>(null);
   const predictionTasksAbort = useRef<AbortController | null>(null);
   const statusAbort = useRef<AbortController | null>(null);
-  const annotationImagesAbort = useRef<AbortController | null>(null);
+  const datasetImagePages = useDatasetImagePages({
+    datasetProfile,
+    annotateProfile,
+    photosActive: menu === 'photos',
+    annotationsActive: menu === 'annotate',
+    photoSplit,
+    annotateSplit,
+    photoLabelFilter,
+    annotationLabelFilter,
+    managedImagesCache,
+    annotationCache,
+    refreshCacheStats,
+    onAnnotationPageLoaded: handleAnnotationPageLoaded,
+    onAnnotationLoadError: () => setAnnotationMessage(''),
+    setPhotoMessage,
+  });
+  const {
+    managedImages, setManagedImages,
+    photoPage, setPhotoPage,
+    photoTotal,
+    photoPageCount,
+    loadManagedImages,
+    annotationImages, setAnnotationImages,
+    annotationPage, setAnnotationPage,
+    annotationTotal,
+    annotationPageCount,
+    annotationImagesLoading,
+    annotationImagesError,
+    loadAnnotationImages,
+    invalidateImageCaches,
+  } = datasetImagePages;
 
   const task = liveTask ?? status?.task ?? null;
   const dataset = status?.dataset;
@@ -179,24 +198,8 @@ function App() {
   const currentProfile = profileOptions.find((item) => item.id === datasetProfile) || profileOptions[0];
   const currentClasses = status?.classes || [];
 
-  function imagePageCacheKey(profile: string, split: Split, label: 'all' | 'labeled' | 'unlabeled', page: number) {
-    return `${profile}|${split}|${label}|${page}`;
-  }
-
   function predictionCacheKey(query: string) {
     return query;
-  }
-
-  function invalidateImageCaches(profile?: string, split?: Split) {
-    const prefix = profile && split ? `${profile}|${split}|` : profile ? `${profile}|` : null;
-    for (const cache of [managedImagesCache.current, annotationCache.current]) {
-      if (!prefix) {
-        cache.clear();
-        continue;
-      }
-      for (const key of cache.keys()) if (key.startsWith(prefix)) cache.delete(key);
-    }
-    refreshCacheStats();
   }
 
   function refreshCacheStats() {
@@ -236,29 +239,8 @@ function App() {
   });
 
   useEffect(() => {
-    invalidateImageCaches();
-  }, [datasetProfile]);
-
-  useEffect(() => {
-    invalidateImageCaches();
-  }, [annotateProfile, annotateSplit, annotationLabelFilter]);
-
-  useEffect(() => {
-    setPhotoPage(1);
-      setSelectedPhotoNames([]);
+    setSelectedPhotoNames([]);
   }, [datasetProfile, photoLabelFilter, photoSplit]);
-
-  useEffect(() => {
-    if (menu === 'photos') void loadManagedImages(photoSplit, photoPage);
-  }, [datasetProfile, menu, photoLabelFilter, photoPage, photoSplit]);
-
-  useEffect(() => {
-    setAnnotationPage(1);
-  }, [annotateProfile, annotateSplit]);
-
-  useEffect(() => {
-    if (menu === 'annotate') void loadAnnotationImages(annotateSplit, annotationPage, annotationLabelFilter);
-  }, [annotateProfile, annotationLabelFilter, annotationPage, annotateSplit, menu]);
 
   useEffect(() => {
     void refreshDatasetReport();
@@ -798,99 +780,27 @@ function App() {
     ]);
   }
 
-  async function loadManagedImages(split: Split, page: number, force = false) {
-    managedImagesCache.current.prune();
-    const requestId = ++managedImagesRequestId.current;
-    const profile = datasetProfile;
-    const label = photoLabelFilter;
-    const key = imagePageCacheKey(profile, split, label, page);
-    if (!force) {
-      const cached = managedImagesCache.current.peek(key);
-      if (cached) {
-        setManagedImages(cached.images);
-        setPhotoTotal(cached.total);
-        setPhotoPage(cached.page);
-        setPhotoPageCount(cached.pageCount);
-        return;
-      }
-    } else {
-      managedImagesCache.current.delete(key);
-    }
-    const query = new URLSearchParams({ profile, split, page: String(page), page_size: '60', label, include_boxes: 'false' });
-    try {
-      const response = await api.get<DatasetImagePage>(`/api/dataset/images?${query.toString()}`);
-      if (requestId !== managedImagesRequestId.current || profile !== datasetProfile) return;
-      managedImagesCache.current.set(key, response);
-      refreshCacheStats();
-      setManagedImages(response.images);
-      setPhotoTotal(response.total);
-      setPhotoPage(response.page);
-      setPhotoPageCount(response.pageCount);
-    } catch (error) {
-      if (requestId !== managedImagesRequestId.current || profile !== datasetProfile) return;
-      setPhotoMessage(error instanceof Error ? error.message : '读取训练图片失败');
-    }
-  }
-
-  async function loadAnnotationImages(split: Split, page: number, label: 'all' | 'labeled' | 'unlabeled' = 'all', force = false): Promise<DatasetImage[]> {
-    annotationImagesAbort.current?.abort();
-    const controller = new AbortController();
-    annotationImagesAbort.current = controller;
-    const requestId = ++annotationImagesRequestId.current;
-    const profile = annotateProfile;
-    annotationCache.current.prune();
-    const key = imagePageCacheKey(profile, split, label, page);
-    let response = force ? undefined : annotationCache.current.peek(key);
-    if (!response) {
-      if (force) annotationCache.current.delete(key);
-      setAnnotationImagesLoading(true);
-      setAnnotationImagesError('');
-    }
-    try {
-      if (!response) {
-        const query = new URLSearchParams({ profile, split, page: String(page), page_size: '60', label });
-        response = await api.get<AnnotationImagePage>(`/api/dataset/images?${query.toString()}`, controller.signal);
-        if (controller.signal.aborted || requestId !== annotationImagesRequestId.current || profile !== annotateProfile) return [];
-        annotationCache.current.set(key, response);
-        refreshCacheStats();
-      }
-      if (requestId !== annotationImagesRequestId.current || profile !== annotateProfile) return [];
-      setAnnotationClasses(response.classes);
-      if (!response.classes.some((item) => item.id === selectedClassId)) setSelectedClassId(response.classes[0]?.id ?? 0);
-      setAnnotationTotal(response.total);
-      setAnnotationPageCount(response.pageCount);
-      setAnnotationPage(response.page);
-      const images = response.images;
-      const sameContext = Boolean(selectedImage && selectedImage.profile === profile && selectedImage.split === split);
-      const match = selectedImage ? images.find((item) => item.name === selectedImage.name) : null;
-      const next = match || (sameContext && selectedImage && images.some((item) => item.name === selectedImage.name) ? selectedImage : images[0] || null);
-      if (!match && (!sameContext || !images.some((item) => item.name === selectedImage?.name))) {
-        setSelectedImage(next);
-        annotationBoxesRef.current = next?.boxes || [];
-        setAnnotationBoxes(next?.boxes || []);
-        resetAnnotationHistory(next?.boxes || []);
-        setAnnotationDirty(false);
-        setSelectedBoxIndex(null);
-      } else if (match && selectedImage?.name !== match.name) {
-        setSelectedImage(match);
-        annotationBoxesRef.current = match.boxes || [];
-        setAnnotationBoxes(match.boxes || []);
-        resetAnnotationHistory(match.boxes || []);
-        setAnnotationDirty(false);
-        setSelectedBoxIndex(null);
-      }
-      setAnnotationPage(page);
-      setAnnotationImages(images);
-      return images;
-    } catch (error) {
-      if (controller.signal.aborted || requestId !== annotationImagesRequestId.current || profile !== annotateProfile || (error instanceof DOMException && error.name === 'AbortError')) return [];
-      const message = error instanceof Error ? error.message : '读取标注图片失败';
-      setAnnotationImagesError(message);
-      setAnnotationMessage('');
-      return [];
-    } finally {
-      if (requestId === annotationImagesRequestId.current && !response) setAnnotationImagesLoading(false);
-      else if (requestId === annotationImagesRequestId.current) setAnnotationImagesLoading(false);
+  function handleAnnotationPageLoaded(response: AnnotationImagePage) {
+    setAnnotationClasses(response.classes);
+    if (!response.classes.some((item) => item.id === selectedClassId)) setSelectedClassId(response.classes[0]?.id ?? 0);
+    const images = response.images;
+    const sameContext = Boolean(selectedImage && selectedImage.profile === annotateProfile && selectedImage.split === annotateSplit);
+    const match = selectedImage ? images.find((item) => item.name === selectedImage.name) : null;
+    const next = match || (sameContext && selectedImage && images.some((item) => item.name === selectedImage.name) ? selectedImage : images[0] || null);
+    if (!match && (!sameContext || !images.some((item) => item.name === selectedImage?.name))) {
+      setSelectedImage(next);
+      annotationBoxesRef.current = next?.boxes || [];
+      setAnnotationBoxes(next?.boxes || []);
+      resetAnnotationHistory(next?.boxes || []);
+      setAnnotationDirty(false);
+      setSelectedBoxIndex(null);
+    } else if (match && selectedImage?.name !== match.name) {
+      setSelectedImage(match);
+      annotationBoxesRef.current = match.boxes || [];
+      setAnnotationBoxes(match.boxes || []);
+      resetAnnotationHistory(match.boxes || []);
+      setAnnotationDirty(false);
+      setSelectedBoxIndex(null);
     }
   }
 
