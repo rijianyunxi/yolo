@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
   Activity,
@@ -1254,6 +1254,14 @@ function App() {
                 停止任务
               </button>
             ) : null}
+          </div>
+          <div className="sidebar-profile">
+            <label>当前配置</label>
+            <select value={datasetProfile} onChange={(e) => changeDatasetProfile(e.target.value)}>
+              {profileOptions.map((p) => (
+                <option key={p.id} value={p.id}>{p.title}（{p.id}）</option>
+              ))}
+            </select>
           </div>
           <div className="status-line">
             <span className={running ? 'dot live' : 'dot'} />
